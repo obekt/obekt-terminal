@@ -1,0 +1,27 @@
+# runtime-generated (rebuild with generate.py)
+terminal/data.js
+terminal/data.json
+terminal/og.png
+terminal/dossiers/
+terminal/commentary_cache.json
+terminal/ticker_cache.json
+terminal/index.public.html
+terminal/.index.deploy.html
+
+# engine runtime state (the bot writes these; never commit)
+engine/okx_jev_log.jsonl
+engine/positions.json
+engine/risk_state.json
+engine/universe.json
+engine/social.json
+engine/catalyst.json
+engine/cg_*.json
+engine/STOP
+engine/*.log
+
+# creds & OS
+*.pem
+credentials.json
+.DS_Store
+__pycache__/
+*.pyc

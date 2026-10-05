@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="index,follow">
+<title>Obekt Autonomous Trading Platform — live telemetry</title>
+<meta name="description" content="A read-only Bloomberg-style terminal over a fully autonomous live crypto trading engine: local LLM desk, Jev System-One typed decisions, news/sentiment/macro injection, server-side risk exits. Open-source. Not financial advice — a pure experiment.">
+<meta property="og:title" content="OBEKT TERMINAL — watch an autonomous trading system think, live">
+<meta property="og:description" content="A real trading bot on real capital: every Jev decision, probability, news catalyst and fill, streamed into a Bloomberg-style terminal. Observation only — the machine runs itself. Click any ledger trade for the full decision replay.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="OBEKT TERMINAL live stats: equity, day P&L, Jev vote, selectivity funnel and cumulative P&L curve">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="og.png">
+<!--OGABS-->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>▚</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="crt"></div>
+<div id="boot"><pre id="boot-text"></pre></div>
+
+<header id="topbar">
+  <div class="logo">▚ OBEKT<span>TERMINAL</span></div>
+  <div class="topmeta" id="engine-meta">ENGINE ———</div>
+  <div class="topmeta live"><span class="dot"></span>LIVE TELEMETRY</div>
+  <div class="topmeta" id="cycle-countdown">NEXT CYCLE ——:——</div>
+  <div class="topmeta" id="clock">--:--:-- UTC</div>
+</header>
+
+<div id="marquee-wrap"><div id="marquee"><span>CONNECTING TO FEED…</span></div></div>
+
+<main id="grid">
+
+  <section class="panel wide" id="p-hero">
+    <div class="body" id="hero-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-session">
+    <div class="body" id="session-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-desk">
+    <h2>DESK NOTE <em id="desk-model"></em></h2>
+    <div class="body"><pre id="desk-note">AWAITING LLM DESK COMMENTARY…</pre>
+    <div id="decision-line" class="decision-line"></div></div>
+  </section>
+
+  <section class="panel" id="p-perf">
+    <h2>PERFORMANCE — LIVE CAPITAL (EUR)</h2>
+    <div class="body" id="perf-body">—</div>
+  </section>
+
+  <section class="panel" id="p-jev">
+    <h2>JEV SYSTEM-ONE — LATEST CALL</h2>
+    <div class="body" id="jev-body">—</div>
+  </section>
+
+  <section class="panel" id="p-gates">
+    <h2>DECISION GATES</h2>
+    <div class="body" id="gates-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-equity">
+    <h2>CUMULATIVE REALIZED P&L — EVERY CLOSED TRADE, LEDGER-VERIFIED <em id="equity-meta"></em></h2>
+    <div class="body" id="equity-body">—</div>
+  </section>
+
+  <section class="panel" id="p-funnel">
+    <h2>SELECTIVITY FUNNEL — ALL TIME</h2>
+    <div class="body" id="funnel-body">—</div>
+  </section>
+
+
+  <section class="panel" id="p-exits">
+    <h2>EXIT ENGINE BREAKDOWN</h2>
+    <div class="body" id="exits-body">—</div>
+  </section>
+
+  <section class="panel" id="p-hours">
+    <h2>P&amp;L BY ENTRY HOUR (UTC)</h2>
+    <div class="body" id="hours-body">—</div>
+  </section>
+  <section class="panel wide" id="p-scatter">
+    <h2>DECISION SCATTER — EVERY JEV BUY-VOTE vs THE ENGINE BAR <em>last 120 votes · x = margin · y = noul</em></h2>
+    <div class="body" id="scatter-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-universe">
+    <h2>UNIVERSE SCAN — EUR SPOT</h2>
+    <div class="body" id="universe-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-pos">
+    <h2>OPEN POSITIONS <em>live uPnL · 5m candle track · server-side protection</em></h2>
+    <div class="body" id="pos-body">—</div>
+  </section>
+
+  <section class="panel" id="p-news">
+    <h2>NEWS CATALYSTS <em id="news-age"></em></h2>
+    <div class="body" id="news-body">—</div>
+  </section>
+
+  <section class="panel" id="p-sent">
+    <h2>SENTIMENT / SOCIAL</h2>
+    <div class="body" id="sent-body">—</div>
+  </section>
+
+  <section class="panel" id="p-macro">
+    <h2>MACRO DESK — NEXT 24H</h2>
+    <div class="body" id="macro-body">—</div>
+  </section>
+
+  <section class="panel" id="p-hist">
+    <h2>JEV VOTE TAPE <em>last 40 calls</em></h2>
+    <div class="body" id="hist-body">—</div>
+  </section>
+
+  <section class="panel" id="p-daily">
+    <h2>DAILY NET P&L (EUR)</h2>
+    <div class="body" id="daily-body">—</div>
+  </section>
+
+  <section class="panel" id="p-inst">
+    <h2>P&amp;L PER INSTRUMENT</h2>
+    <div class="body" id="inst-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-arch">
+    <h2>SYSTEM ARCHITECTURE — WHAT YOU ARE WATCHING</h2>
+    <div class="body" id="arch-body">—</div>
+  </section>
+
+  <section class="panel" id="p-stack">
+    <h2>MODEL STACK</h2>
+    <div class="body" id="stack-body">—</div>
+  </section>
+
+  <section class="panel" id="p-optim">
+    <h2>PROMPT / COST OPTIMIZATION</h2>
+    <div class="body" id="optim-body">—</div>
+  </section>
+
+  <section class="panel" id="p-costlive">
+    <h2>DECISION ECONOMICS — LIVE</h2>
+    <div class="body" id="costlive-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-trades">
+    <h2>TRADE LEDGER — REALIZED (LAST 40)</h2>
+    <div class="body" id="trades-body">—</div>
+  </section>
+
+  <section class="panel wide tall" id="p-tape">
+    <h2>EVENT TAPE <em>every cycle · gates · decisions · fills · risk</em></h2>
+    <div class="body" id="tape-body">—</div>
+  </section>
+
+</main>
+
+<footer id="bottombar">
+  <div id="contact">—</div>
+  <div id="gen">—</div>
+</footer>
+<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL, SHOWN EXACTLY AS BUILT · NOTHING HERE PLACES ORDERS — THE ONLY INTERACTION IS THE LEDGER REPLAY VIEWER · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: OKX EUROPE PUBLIC FEED · DECISIONS: TYPESAFE JEV SYSTEM-ONE · DESK COPY: HALOGEN-QWEN3.8-FLASH-NEXT<span class="cursor">█</span></div>
+
+<div id="modal-root"></div>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
