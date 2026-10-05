@@ -51,6 +51,12 @@ Risk rules live in CODE, not Jev. Kill switch: touch STOP -> entries halt, manag
 """
 import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, urllib.error
 
+# Single source of truth for the engine version. The observation terminal
+# (generate.py) parses this constant from the engine source, so the displayed
+# version can never drift from the running engine again. Bump on every behavior
+# change and note it in the module docstring + skill.
+ENGINE_VERSION = "v3.6"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
 STOP = os.path.join(HERE, "STOP")

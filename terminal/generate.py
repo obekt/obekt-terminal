@@ -52,8 +52,22 @@ CONTACT_LINE = os.environ.get(
     "TERMINAL_CONTACT_LINE",
     "OBEKT AUTONOMOUS TRADING PLATFORM  //  BUILT BY OBEKT AI WORKS -> https://obekt.com")
 
+def _engine_version():
+    """Parse ENGINE_VERSION from the engine source (single source of truth).
+    The engine dir is mounted read-only at BASE; never hardcode the version
+    here again -- it drifts (v3.5 was displayed while v3.6 traded)."""
+    try:
+        src = open(os.path.join(BASE, "okx_jev.py")).read(16384)
+        m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return "unknown"
+
+
 ENGINE = {
-    "version": "v3.6",
+    "version": _engine_version(),
     "venue": "OKX EUROPE (EEA) SPOT",
     "cycle_s": 300,
     "quote": "EUR",
