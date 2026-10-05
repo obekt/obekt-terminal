@@ -46,7 +46,7 @@ Every number below is real, pulled live from the running engine. Including the l
 <table>
 <tr>
 <td width="50%"><img src="docs/screenshots/1.png" width="100%"/><br/><sub><b>1 · The live deck.</b> Hero KPIs (equity, day P&L, cycles run, model calls), the session-liveness strip that counts events <i>since you opened the tab</i>, the LLM desk note, and the scrolling price marquee with sparklines.</sub></td>
-<td width="50%"><img src="docs/screenshots/2.png" width="100%"/><br/><sub><b>2 · Why it barely trades.</b> The <b>selectivity funnel</b> (~140,000 pair-scans → a handful of fills), the <b>exit-engine breakdown</b>, and P&L by entry hour. Saying "no" is the job.</sub></td>
+<td width="50%"><img src="docs/screenshots/2.png" width="100%"/><br/><sub><b>2 · Why it barely trades.</b> The <b>selectivity funnel</b> (151,230 pair-scans → 79 fills), the <b>exit-engine breakdown</b>, and P&L by entry hour. Saying "no" is the job.</sub></td>
 </tr>
 <tr>
 <td width="50%"><img src="docs/screenshots/3.png" width="100%"/><br/><sub><b>3 · The decision scatter.</b> Every model buy-vote plotted as <i>margin × noul</i> against the engine's hard bars, colored by outcome. Grey dots = the model wanted in, <b>the code said no</b>. That grey cloud is the risk layer earning its keep.</sub></td>
@@ -123,7 +123,14 @@ That's it — the full deck, charts, and click-to-replay trade dossiers, driven 
 
 Read [DISCLAIMER.md](DISCLAIMER.md) first. Then:
 
-**1. Prerequisites** — Python 3.9+, and a Node/OpenAI-compatible endpoint if you want desk commentary.
+**1. Prerequisites**
+
+- Python 3.9+ (stdlib only — no pip dependencies for the engine).
+- **An OKX Europe (EEA) account.** This is important: the engine trades **EUR-quoted spot pairs** against `eea.okx.com`, because that's the venue we run on. OKX keys are **site-scoped** — a global (www.okx.com) key returns `50119 API key doesn't exist` against the EEA endpoint, and vice versa. If you're outside the EEA, either use the global site and adapt the base URL + pair list, or treat this as a reference implementation. The strategy logic is venue-agnostic; the pair universe, fee numbers and the `eea.okx.com` base are not.
+- A [TypeSafe](https://typesafe.ai) API key for the decision model (~$0.04 per million input tokens — thousands of decisions for cents).
+- Optionally, an OpenAI-compatible chat endpoint for the desk commentary (a **local** model works — LM Studio, llama.cpp, vLLM, Ollama). Not required: without it the terminal shows fallback commentary.
+- Real capital you are prepared to lose entirely. See the disclaimer.
+
 ```bash
 # decision model key (TypeSafe Jev — ~$0.04 per million input tokens)
 mkdir -p ~/.config/typesafe && cat > ~/.config/typesafe/credentials.json <<'JSON'
