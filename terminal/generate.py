@@ -37,8 +37,13 @@ LLM_MODEL = os.environ.get("TERMINAL_LLM_MODEL", "qwen3-flash")
 LLM_KEY_ENV = os.environ.get("TERMINAL_LLM_KEY_ENV", "TERMINAL_LLM_API_KEY")
 COMMENTARY_MIN_INTERVAL_S = 300      # never call LLM more often than this
 COMMENTARY_MAX_AGE_S = 900           # force refresh if inputs changed and this old
-COMMENTARY_CACHE = os.path.join(SITE, "commentary_cache.json")
-TICKER_CACHE = os.path.join(SITE, "ticker_cache.json")
+# STATE_DIR holds the expensive-to-rebuild artifacts (LLM debrief dossiers, the
+# commentary cache, the ticker cache). Point it at a persistent volume so a
+# container restart does not re-spend those LLM calls. Defaults to SITE.
+STATE_DIR = os.path.expanduser(os.environ.get("TERMINAL_STATE_DIR", SITE))
+os.makedirs(STATE_DIR, exist_ok=True)
+COMMENTARY_CACHE = os.path.join(STATE_DIR, "commentary_cache.json")
+TICKER_CACHE = os.path.join(STATE_DIR, "ticker_cache.json")
 
 MARQUEE_INSTS = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR", "NEAR-EUR",
                  "SUI-EUR", "PUMP-EUR", "LINK-EUR", "AAVE-EUR", "AVAX-EUR"]
@@ -511,7 +516,7 @@ def build_tape(events, limit=90):
     return tape[-limit:][::-1]
 
 
-DOSSIER_DIR = os.path.join(SITE, "dossiers")
+DOSSIER_DIR = os.path.join(STATE_DIR, "dossiers")
 DEBRIEFS_PER_RUN = 3  # cap LLM debrief calls per build (dossiers are cached forever)
 
 
@@ -1107,19 +1112,19 @@ def build():
         "trades": trips[-40:][::-1],
         "desk_note": desk,
     }
-    tmp = os.path.join(SITE, "data.json.tmp")
+    tmp = os.path.join(STATE_DIR, "data.json.tmp")
     with open(tmp, "w") as f:
         json.dump(data, f, separators=(",", ":"))
-    os.replace(tmp, os.path.join(SITE, "data.json"))
-    tmp = os.path.join(SITE, "data.js.tmp")
+    os.replace(tmp, os.path.join(STATE_DIR, "data.json"))
+    tmp = os.path.join(STATE_DIR, "data.js.tmp")
     with open(tmp, "w") as f:
         f.write("window.TT_DATA = ")
         json.dump(data, f, separators=(",", ":"))
         f.write(";\n")
-    os.replace(tmp, os.path.join(SITE, "data.js"))
+    os.replace(tmp, os.path.join(STATE_DIR, "data.js"))
     # regenerate the OG share card, throttled (numbers don't need 45s churn)
     try:
-        og_path = os.path.join(SITE, "og.png")
+        og_path = os.path.join(STATE_DIR, "og.png")
         og_age = time.time() - (os.path.getmtime(og_path) if os.path.exists(og_path) else 0)
         if og_age > 300 or "--og" in sys.argv:
             import make_og

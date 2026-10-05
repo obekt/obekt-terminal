@@ -26,9 +26,15 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# Generated artifacts live in STATE_DIR (a persistent volume when containerized)
+# so LLM-built dossiers survive restarts. Static assets stay next to the code.
+STATE_DIR = os.path.expanduser(os.environ.get("TERMINAL_STATE_DIR", HERE))
 REFRESH_S = 45  # data rebuild cadence (engine cycle is 5m; near-real-time feel)
 PORT = 8770
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE", "").rstrip("/")
+# paths served from STATE_DIR rather than HERE
+GENERATED_PREFIXES = ("/dossiers/",)
+GENERATED_FILES = ("data.js", "data.json")
 
 
 def absolutize_og(html):
@@ -49,6 +55,20 @@ def absolutize_og(html):
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=HERE, **kw)
+
+    def translate_path(self, path):
+        """Serve generated artifacts (data.js/json, dossiers/, og.png) from
+        STATE_DIR — the persistent volume — and everything else from HERE."""
+        clean = path.split("?")[0].split("#")[0]
+        name = clean.lstrip("/")
+        if (clean.startswith(GENERATED_PREFIXES)
+                or name in GENERATED_FILES or name == "og.png"):
+            # strip leading slash and resolve against STATE_DIR, safely
+            rel = name
+            target = os.path.normpath(os.path.join(STATE_DIR, rel))
+            if target.startswith(os.path.abspath(STATE_DIR)):
+                return target
+        return super().translate_path(path)
 
     def end_headers(self):
         # data.js/dossiers must never be cached (live); static assets can be

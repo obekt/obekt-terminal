@@ -14,6 +14,8 @@ import os
 import sys
 
 SITE = os.path.dirname(os.path.abspath(__file__))
+STATE_DIR = os.path.expanduser(os.environ.get("TERMINAL_STATE_DIR", SITE))
+os.makedirs(STATE_DIR, exist_ok=True)
 W, H = 1200, 630
 FONT_CANDIDATES = [
     "/System/Library/Fonts/Menlo.ttc",
@@ -196,14 +198,14 @@ def render(data):
     contact = data.get("contact") or ""
     txt(W - 24, H - 30, contact, GREEN, F(13), anchor="ra")
 
-    tmp = os.path.join(SITE, "og.png.tmp")
+    tmp = os.path.join(STATE_DIR, "og.png.tmp")
     img.save(tmp, "PNG", optimize=True)
-    os.replace(tmp, os.path.join(SITE, "og.png"))
+    os.replace(tmp, os.path.join(STATE_DIR, "og.png"))
     return True
 
 
 if __name__ == "__main__":
-    with open(os.path.join(SITE, "data.json")) as f:
+    with open(os.path.join(STATE_DIR, "data.json")) as f:
         data = json.load(f)
     ok = render(data)
     print("og.png written" if ok else "og render skipped")

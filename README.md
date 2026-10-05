@@ -6,9 +6,11 @@
 
 **Open-source · Runs on a local LLM · Decisions cost fractions of a cent · Built by [Obekt AI Works](https://obekt.com)**
 
+### 🔴 [**LIVE DEMO → trader.obekt.com**](https://trader.obekt.com) — watch the real system trade right now
+
 <img src="docs/screenshots/1.png" width="100%" alt="Obekt Terminal live dashboard"/>
 
-[**What it is**](#what-this-is) · [**Live screenshots**](#what-it-looks-like) · [**How it thinks**](#how-it-thinks-the-architecture) · [**Run it**](#run-it) · [**The terminal**](#the-observation-terminal) · [**Costs**](#what-it-costs) · [**⚠ Disclaimer**](#the-boring-but-important-part)
+[**▶ LIVE DEMO**](https://trader.obekt.com) · [**What it is**](#what-this-is) · [**Live screenshots**](#what-it-looks-like) · [**How it thinks**](#how-it-thinks-the-architecture) · [**Run it**](#run-it) · [**The terminal**](#the-observation-terminal) · [**Costs**](#what-it-costs) · [**⚠ Disclaimer**](#the-boring-but-important-part)
 
 </div>
 

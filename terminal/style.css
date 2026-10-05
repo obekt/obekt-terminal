@@ -151,10 +151,15 @@ tr:hover{background:inherit}
 .dbar-meta{width:110px;color:var(--gray);font-size:10px}
 
 #bottombar{display:flex;justify-content:space-between;gap:12px;padding:6px 12px;
-  background:#0c0a04;border-top:1px solid var(--amber-dim);flex-wrap:wrap}
+  background:#0c0a04;border-top:1px solid var(--amber-dim);flex-wrap:wrap;align-items:center}
 #contact{color:var(--green);letter-spacing:1px;font-size:12px;animation:pulse 3s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
 #gen{color:var(--gray);font-size:10.5px}
+/* the one outbound link on the deck: the open-source repo */
+#gh-link{pointer-events:auto!important;cursor:pointer!important;color:var(--cyan);
+  font-size:11px;letter-spacing:1px;border:1px solid var(--border);padding:2px 8px;
+  transition:color .15s,border-color .15s,background .15s}
+#gh-link:hover{color:#000;background:var(--cyan);border-color:var(--cyan)}
 #disclaimer{background:#080808;border-top:1px solid var(--border);color:var(--gray);
   font-size:9.5px;letter-spacing:1px;padding:5px 12px;text-align:center}
 .cursor{color:var(--amber);animation:blink 1s infinite;margin-left:4px}
