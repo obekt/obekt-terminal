@@ -121,7 +121,7 @@ Strategy directive: fast trades, take profit immediately, volume regime.
   universe.json) -> filter vol24h>=€200k, spread<=0.20%, 24h range>=2% -> rank
   by day range -> top 10 (UNIVERSE_SCAN) -> momentum gates -> top 5 to Jev
   (MAX_JEV_PAIRS, ranked by chg30*vol30; jev_pair_cap event logs drops).
-- bracket_for(spread): TP = 4x all-in cost (spread+0.1 maker+0.2 taker),
+- bracket_for(spread): TP = EDGE_MULT x all-in cost (spread+0.1 maker+0.2 taker),
   clamped [1.5, 3.0]. SL=0.47xTP, trail arm 0.40xTP, giveback 0.23xTP, floor
   0.07xTP, min_vol30 = 0.6xTP (reachability gate replaces fixed 0.9%). Bracket
   stored in positions.json meta at entry; manage() reads it per-position (old
@@ -171,7 +171,7 @@ Strategy directive: fast trades, take profit immediately, volume regime.
   0.26 -> conf 0.48 vetoed; same pair later conf 0.76 -> traded, lost on thin
   book). The metric was noise on the decision edge.
 - NEW BAR: margin = p(chosen_buy) - p(no_trade) from best_action.probabilities.
-  Trade if (margin >= MARGIN_BAR 0.25 OR conf >= 0.50) AND noul >= NOUL_BAR
+  Trade if (margin >= MARGIN_BAR OR conf >= 0.50) AND noul >= NOUL_BAR
   0.45. Replay over 38 real picks: margin>=0.25 & noul>=0.45 = 9 would-fire
   (vs 3 for conf bar); after depth gates ~6. Logged as `margin` on open/no_trade.
 - NEW STATE (multi-timeframe, was 30-min-only keyhole): chg_4h_pct (1H candles),
@@ -193,6 +193,22 @@ Strategy directive: fast trades, take profit immediately, volume regime.
   €2.12 fees; would have blocked ~4 of the re-entries). A TP exit marks the
   local top; immediate re-entry is the worst entry in the book. in_cooldown()
   now returns minutes-left (0=clear) and logs cooldown_skip with after=win/loss.
+
+- v3.6 (10-05) REPLAY-TUNED PARAMETERS: EDGE_MULT 4->7, MARGIN_BAR 0.25->0.30.
+  Method: offline simulator replayed 54 logged trades candle-by-candle on real 5m
+  history-candles using each trade's LOGGED bracket (conservative intrabar order:
+  SL before TP; poll-based trail/time-stop on candle close). Validation caveat:
+  replaying the exact logged brackets gave +5.67 EUR vs -4.14 actual -> the
+  simulator is ~0.18 EUR/trade optimistic (slippage, 5-min poll latency, taker
+  chases). Trust variant DELTAS, never absolutes. Findings: TP 4x->7x cut hard
+  SL exits 16->7 and moved wins to the trail (14->23); fixed-TP hits became rare
+  (16->6) - the trailing exit owns wins by design. MARGIN_BAR 0.30 raised win
+  rate 53.7->57.4% by dropping ~5 weak trades; 0.35+ cuts too deep. Time-stop ON
+  beat OFF by ~2 EUR - it is not the leak. Root cost is EXECUTION (0.32%/trade
+  fee+slippage drag vs 0.22% gross edge), not bracket shape; the signal itself
+  tests effective (WR 47.5% vs 37.7% breakeven, payoff 1.65:1). Phase-2
+  candidate if still sub-water after ~50 trades: post-only (maker) exits on
+  trail/time-stop legs instead of market sells.
 
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 

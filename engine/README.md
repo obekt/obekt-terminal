@@ -79,11 +79,11 @@ reasoning behind the value:
 | constant | default | meaning |
 |---|---|---|
 | `MAX_JEV_PAIRS` | 5 | how many gate-survivors the model sees (prompt-size bound) |
-| `EDGE_MULT` | 4.0 | take-profit ≥ 4× all-in round-trip cost — the fee-wall rule |
+| `EDGE_MULT` | 7.0 | take-profit ≥ 7× all-in round-trip cost — the fee-wall rule (raised from 4× after the 10-05 replay study: wider TP cut hard stop-loss exits ~56% and let the trailing exit own more of each move) |
 | `MIN_TARGET_PCT` / `MAX_TARGET_PCT` | 1.5 / 3.0 | TP clamp — a scalp must be reachable in ~90 min |
 | `SL_RATIO` | 0.47 | stop = 0.47 × TP |
 | `TRAIL_ARM_RATIO` / `TRAIL_GIVEBACK_RATIO` / `TRAIL_FLOOR_RATIO` | 0.40 / 0.23 / 0.07 | trailing exit: arm at 40% of TP, exit after giving back 23% from HWM, never below 7% |
-| `MARGIN_BAR` | 0.25 | p(chosen buy) − p(no_trade) from Jev's typed probabilities |
+| `MARGIN_BAR` | 0.30 | p(chosen buy) − p(no_trade) from Jev's typed probabilities (0.25 → 0.30 on 10-05: replay win rate 53.7% → 57.4%) |
 | `CONF_BAR` | 0.50 | OR-path: high certainty also passes |
 | `NOUL_BAR` | 0.45 | Jev's P(price rises ≥ trail-arm within 45 min) floor |
 | `MAX_OPEN` / `MAX_ENTRIES_PER_CYCLE` | 2 / 1 | concentration + one quality entry per cycle |
@@ -116,5 +116,5 @@ threshold sweeps are offline replays, not guesses).
   balance deletes live positions. Prune on *cash* balance + no live algo.
 - **Entry fees come out of the base ccy** — selling the gross quantity fails;
   size sells from live balance.
-- **The fee wall is the whole game** — TP at 4× all-in cost or don't trade.
+- **The fee wall is the whole game** — TP at 7× all-in cost or don't trade.
 - **Ground truth is the fills ledger**, not logged estimates.

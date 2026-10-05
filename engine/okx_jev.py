@@ -132,7 +132,7 @@ FALLBACK_PAIRS = ["NEAR-EUR", "ZEC-EUR", "SUI-EUR", "LINK-EUR"]  # scan failure 
 # wide-spread mover must promise a bigger move to be worth taking.
 MAKER_FEE_PCT = 0.10
 TAKER_FEE_PCT = 0.20
-EDGE_MULT = 4.0             # TP >= 4x all-in round-trip cost
+EDGE_MULT = 7.0             # TP >= 7x all-in round-trip cost (replay 10-05: 4x->7x cut SL exits 16->7, trail 14->23, best net)
 MIN_TARGET_PCT = 1.5        # never below the v3 fixed TP
 MAX_TARGET_PCT = 3.0        # never above what a scalp can reach in 90min
 SL_RATIO = 0.47             # SL = 0.47 x TP (v3's 0.7/1.5 ratio, preserved)
@@ -190,7 +190,7 @@ MIN_TAKER_BUY = 0.50      # net aggressive buying over last 30min
 # vs 3/38 for conf>=0.50. conf>=0.50 kept as an OR-path for strong-certainty
 # picks. NOUL_BAR 0.40 -> 0.45: margin loosening paid for by a stricter
 # directional-probability floor.
-MARGIN_BAR = 0.25         # p(chosen buy) - p(no_trade) from Jev probabilities
+MARGIN_BAR = 0.30         # p(chosen buy) - p(no_trade) from Jev probabilities (replay 10-05: 0.25->0.30 WR 53.7->57.4%)
 CONF_BAR = 0.50           # OR-path: high certainty also passes
 NOUL_BAR = 0.45           # noul = P(rise >= trail_arm% within 45min)
 MIN_STAKE_EUR = 10.0
