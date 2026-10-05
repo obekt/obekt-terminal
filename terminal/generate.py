@@ -53,7 +53,7 @@ CONTACT_LINE = os.environ.get(
     "OBEKT AUTONOMOUS TRADING PLATFORM  //  BUILT BY OBEKT AI WORKS -> https://obekt.com")
 
 ENGINE = {
-    "version": "v3.5",
+    "version": "v3.6",
     "venue": "OKX EUROPE (EEA) SPOT",
     "cycle_s": 300,
     "quote": "EUR",
