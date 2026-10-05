@@ -111,6 +111,7 @@ See the dashboard with real frozen telemetry from our live run:
 cd terminal
 cp sample_data/data.js data.js
 cp sample_data/data.json data.json
+cp sample_data/og.png og.png
 cp -r sample_data/dossiers dossiers
 python3 -m http.server 8770
 # open http://localhost:8770
@@ -153,10 +154,50 @@ python3 okx_jev.py cycle       # ONE full cycle: scan → gate → decide → (m
 ```
 Kill switch: `touch engine/STOP` halts new entries instantly (management of open positions continues).
 
+A systemd timer is sturdier than cron (catch-up after downtime, journald logs, no
+shell quoting). This is what we run in production:
+
+```ini
+# /etc/systemd/system/obekt-trader.service
+[Unit]
+Description=Obekt autonomous scalper — one full cycle
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/trader/engine
+ExecStart=/usr/bin/python3 /opt/trader/engine/okx_jev.py cycle
+TimeoutStartSec=240
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/trader/engine
+```
+```ini
+# /etc/systemd/system/obekt-trader.timer
+[Unit]
+Description=Run obekt-trader cycle every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+AccuracySec=20s
+Persistent=true          # catch up a run missed while the box was down
+
+[Install]
+WantedBy=timers.target
+```
+```bash
+systemctl daemon-reload && systemctl enable --now obekt-trader.timer
+systemctl list-timers obekt-trader.timer      # confirm the next fire
+```
+
 **5. Run the terminal over the live log.**
 ```bash
 cd terminal
-export OKX_TERMINAL_BASE=~/.hermes/workspace/okx
+export OKX_TERMINAL_BASE=~/.hermes/workspace/okx    # dir holding okx_jev_log.jsonl
+# optional: keep generated artifacts (dossiers, caches) on a persistent path so
+# a restart doesn't re-spend LLM calls rebuilding them
+export TERMINAL_STATE_DIR=/var/lib/obekt-terminal
 # optional desk-commentary LLM (any OpenAI-compatible endpoint; local works):
 export TERMINAL_LLM_URL="http://localhost:1234/v1/chat/completions"   # e.g. LM Studio / llama.cpp
 export TERMINAL_LLM_MODEL="qwen3-flash"                               # any local flash model
@@ -174,7 +215,7 @@ A single-page, zero-dependency text UI — no React, no build step, no CDN. Just
 - **25 panels**: hero KPIs · session-liveness counter · LLM desk note · performance · latest decision (with what the engine *did* with it) · gate checklist · **equity curve** · **selectivity funnel** · **decision scatter** · exit breakdown · P&L by hour/instrument · universe scan · open positions · news · sentiment · macro · vote tape · daily P&L · architecture · **model stack** · **cost optimization** · **decision economics** · trade ledger · event tape.
 - **Real-time feel**: the page polls `data.js` every 10s, new tape rows flash, the tab title blinks on a fill, and a live `NEXT CYCLE` countdown ticks from the last engine event.
 - **Click-to-replay dossiers**: every closed trade stores an immutable replay (chart + vote + prompt state + timeline + LLM post-mortem).
-- **Read-only by construction**: `cursor:default`, `user-select:none`, no links or handlers anywhere except the ledger replay. You literally cannot place an order from it.
+- **Read-only by construction**: `cursor:default`, `user-select:none`, no links or handlers anywhere except the ledger replay and the footer's source link. You literally cannot place an order from it.
 
 ---
 

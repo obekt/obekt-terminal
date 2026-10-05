@@ -102,6 +102,7 @@ Each closed trade has an immutable `dossiers/<tid>.json` rendering:
 | var | default | purpose |
 |---|---|---|
 | `OKX_TERMINAL_BASE` | `~/.hermes/workspace/okx` | engine workspace to read |
+| `TERMINAL_STATE_DIR` | *(the code dir)* | where generated artifacts land (`dossiers/`, `data.js`, `og.png`, caches). Point at a persistent path/volume so a restart doesn't re-spend LLM calls |
 | `TERMINAL_LLM_URL` | `http://localhost:1234/v1/chat/completions` | desk-commentary endpoint (any OpenAI-compatible) |
 | `TERMINAL_LLM_MODEL` | `qwen3-flash` | model name at that endpoint |
 | `TERMINAL_LLM_KEY_ENV` | `TERMINAL_LLM_API_KEY` | which env var holds the key (blank ⇒ local, no key) |

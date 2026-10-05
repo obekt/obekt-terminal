@@ -53,9 +53,16 @@ maybe open one position. Every step logs a JSONL event to `okx_jev_log.jsonl`
 
 ### Scheduling
 
+The engine is one-shot by design — a scheduler calls `cycle` every 5 minutes.
+
 ```cron
 */5 * * * * cd /path/to/engine && /usr/bin/python3 okx_jev.py cycle >> cycle.log 2>&1
 ```
+
+**Prefer a systemd timer** (this is what we run in production): `Persistent=true`
+catches up a run missed while the box was down, journald collects the logs, and
+it survives reboot once `enabled`. Full unit files are in the main
+[README → Run it → step 4](../README.md#b-the-full-live-system-your-capital-your-keys-your-responsibility).
 
 ### Kill switch
 
