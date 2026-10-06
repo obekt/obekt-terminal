@@ -210,6 +210,33 @@ Strategy directive: fast trades, take profit immediately, volume regime.
   candidate if still sub-water after ~50 trades: post-only (maker) exits on
   trail/time-stop legs instead of market sells.
 
+- v3.6.1 (10-06) GATE COUPLING FIX + desk-note grounding.
+  MIN_VOL30_MULT 0.6 -> 0.40. BUG: the vol30 reachability gate is defined as
+  MIN_VOL30_MULT x TP, so raising EDGE_MULT to 7 (v3.6) silently scaled the
+  entry filter too — TP ~2.3-3.0% made the gate demand 1.4-1.8% realized 30min
+  range against a tape median of 0.49%. Throughput collapsed to 1 trade in 8.5h
+  (cycles reaching a Jev decision 20% -> 9%): the wide bracket was fine, but it
+  choked the front door. LESSON: any parameter expressed as a MULTIPLE of TP
+  couples entry throughput to the fee wall; the v3.6 replay simulator only
+  scored trades ALREADY TAKEN, so it structurally could not see a gate change's
+  effect on trade COUNT — always re-measure gate pass-rate separately after
+  moving any bracket parameter. 0.40 x ~2.5% TP ~= 1.0% absolute vol30
+  requirement: restores pre-v3.6 flow while keeping the wide bracket intact.
+  The gate should ask a market-property question ("can this pair move ~1% in
+  30min?"), never "60% of my target?".
+  DESK-NOTE GROUNDING: the observation terminal's commentary LLM prompt
+  self-described the system as a "read-only showcase" and the data snapshot
+  carried no trading-state facts, so the model invented "engine in read-only
+  showcase mode, not placing live orders" on a LIVE-capital public page. Fix:
+  add a trading_state block to the prompt payload (mode / live_capital /
+  halted=STOP-file-exists / open_positions / day_trades) and state plainly that
+  the engine trades REAL capital and is never demo/paper/showcase; low trade
+  counts are gate selectivity, not a mode change; rules forbid invented modes.
+  Same correction in the per-trade debrief prompt. NOTE: the desk-commentary
+  model is served over a separate path from the decision model — a desk-LLM
+  outage only freezes the site's commentary (cache fallback shows the last good
+  note); trading decisions and the whole engine are fully unaffected.
+
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 
 - v3 rebuilt after 24h live post-mortem: 29 opens, ledger-verified ~3W/13L,
