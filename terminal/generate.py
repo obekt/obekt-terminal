@@ -551,7 +551,8 @@ def make_debrief(dossier):
         "timeline": [e.get("event") for e in dossier.get("timeline", [])],
     }, separators=(",", ":"))
     prompt = (
-        "You are the post-mortem voice of OBEKT TERMINAL, a showcase of a live autonomous crypto scalper. "
+        "You are the post-mortem voice of OBEKT TERMINAL, the dashboard of a LIVE autonomous crypto "
+        "scalper trading REAL capital. "
         "One closed trade, raw telemetry:\n" + snap + "\n"
         "Write ONE debrief line, max 150 chars, ALL-CAPS terminal voice: name what worked or failed "
         "(entry timing, exit engine, model vote vs outcome) using ONLY these facts. No advice, no filler. "
@@ -968,11 +969,18 @@ def build_positions(positions_raw, px):
     return out
 
 
-def build_commentary(jev_latest, stats, equity, news, sentiment, trips):
+def build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions=None):
     """LLM desk note via halogen-qwen3.8-flash-next. Cached + rate-limited."""
     cache = _load_json(COMMENTARY_CACHE, {}) or {}
     recent = trips[-6:]
     payload_txt = json.dumps({
+        "trading_state": {
+            "mode": ENGINE["mode"],
+            "live_capital": True,
+            "halted": os.path.exists(os.path.join(BASE, "STOP")),
+            "open_positions": len(positions or []),
+            "day_trades": equity.get("day_trades"),
+        },
         "equity": equity,
         "stats": {k: stats[k] for k in ("trades_all", "win_rate_pct", "net_all_eur",
                                         "profit_factor", "fees_all_eur")},
@@ -1003,14 +1011,19 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips):
             print("no LLM key in env — skipping desk note", file=sys.stderr)
             return cache.get("out")
     prompt = (
-        "You are the desk commentator for OBEKT TERMINAL, a read-only Bloomberg-style showcase of a "
-        "live autonomous crypto scalping system (OKX EEA spot, EUR pairs, 5-min cycles). "
+        "You are the desk commentator for OBEKT TERMINAL, the Bloomberg-style observation dashboard of a "
+        "LIVE autonomous crypto scalping system trading REAL capital (OKX EEA spot, EUR pairs, 5-min cycles). "
+        "The dashboard displays telemetry read-only, but the ENGINE behind it places real orders: it is "
+        "NEVER in demo, paper, showcase or read-only trading mode. The trading_state block in the snapshot "
+        "is authoritative — halted=true means the kill switch is on; otherwise it is trading live. "
+        "Few or zero trades in a day is normal gate selectivity, not a mode change. "
         "The engine: deterministic Python gates scan ~270 EUR pairs, momentum/depth gates filter them, "
         "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text); "
         "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
         "LIVE SYSTEM SNAPSHOT (UTC):\n" + payload_txt + "\n\n"
         "Write for sophisticated visitors who might hire the sysop to build one. Rules: "
-        "reference ONLY facts in the snapshot, no invented numbers, no financial advice, terse terminal voice. "
+        "reference ONLY facts in the snapshot, no invented numbers, no invented modes or states "
+        "(never call it showcase/demo/read-only trading), no financial advice, terse terminal voice. "
         "Reply STRICT JSON: {\"desk_note\": \"<3-5 sentences: tape read, what the engine is doing and why, "
         "risk posture>\", \"decision_line\": \"<ONE line <=110 chars explaining the latest Jev decision or "
         "why the engine is flat>\"}"
@@ -1098,7 +1111,7 @@ def build():
         "funding_bps": jev_latest.get("funding_bps") if jev_latest else None,
     }
 
-    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips)
+    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions)
 
     data = {
         "generated": _now().isoformat(),

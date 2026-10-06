@@ -55,7 +55,7 @@ import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, url
 # (generate.py) parses this constant from the engine source, so the displayed
 # version can never drift from the running engine again. Bump on every behavior
 # change and note it in the module docstring + skill.
-ENGINE_VERSION = "v3.6"
+ENGINE_VERSION = "v3.6.1"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
@@ -145,7 +145,11 @@ SL_RATIO = 0.47             # SL = 0.47 x TP (v3's 0.7/1.5 ratio, preserved)
 TRAIL_ARM_RATIO = 0.40      # arm trailing at 0.40 x TP
 TRAIL_GIVEBACK_RATIO = 0.23 # exit after giving back 0.23 x TP from HWM
 TRAIL_FLOOR_RATIO = 0.07    # trailing exit never below 0.07 x TP
-MIN_VOL30_MULT = 0.6        # realized 30min range must be >= 0.6 x TP (reachable)
+MIN_VOL30_MULT = 0.40       # reachability gate DECOUPLED from the fee-wall TP
+                            # (v3.6.1, 10-06): 0.6 x TP demanded 1.4-1.8% vol30 after
+                            # EDGE_MULT 7 (vs tape median 0.49%) -> 1 trade in 8.5h.
+                            # 0.40 x ~2.5% TP ~= 1.0%: restores pre-v3.6 trade flow
+                            # while keeping the wide 7x bracket intact.
 MAX_SPREAD_PCT = 0.20       # widened from 0.12: EUR movers legitimately sit at
                             # 0.12-0.20%, and the cost-aware TP now pays for it
 
