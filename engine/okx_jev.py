@@ -55,7 +55,7 @@ import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, url
 # (generate.py) parses this constant from the engine source, so the displayed
 # version can never drift from the running engine again. Bump on every behavior
 # change and note it in the module docstring + skill.
-ENGINE_VERSION = "v3.6.1"
+ENGINE_VERSION = "v3.6.2"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
@@ -152,6 +152,24 @@ MIN_VOL30_MULT = 0.40       # reachability gate DECOUPLED from the fee-wall TP
                             # while keeping the wide 7x bracket intact.
 MAX_SPREAD_PCT = 0.20       # widened from 0.12: EUR movers legitimately sit at
                             # 0.12-0.20%, and the cost-aware TP now pays for it
+
+# ---------------- EXIT GEOMETRY DECOUPLED FROM TP (v3.6.2, 10-07) ----------------
+# WHY: v3.6 raised EDGE_MULT 4->7 to widen TP past the fee wall. But SL/trail all
+# scaled off TP (SL = 0.47 x TP), so the stop DOUBLED 0.70% -> 1.36% and the trail
+# giveback 0.35% -> 0.67%. Live result: avg win +0.51% vs avg loss -0.81% — winning
+# small, losing big; -0.60 EUR/trade (worse than the -0.08 pre-v3.6 benchmark). The
+# replay that motivated 7x only counted STOP *frequency*, not stop *depth*.
+# FIX: keep the wide TP (it clears the fee wall and lets a real winner run), but
+# anchor the EXIT geometry to COST (spread+fees = a market-noise property), NOT to
+# TP (a strategy choice). Multipliers reproduce the proven v3.5 depths at a typical
+# EUR cost of ~0.40%: SL ~0.70%, trail arm ~0.60%, giveback ~0.35%, floor ~0.10% —
+# and stay spread-adaptive (a 0.20%-spread pair gets proportionally more room).
+SL_COST_MULT = 1.75         # SL   = cost x 1.75  (~0.70% at cost 0.40%)
+ARM_COST_MULT = 1.50        # arm  = cost x 1.50  (~0.60%)
+GB_COST_MULT = 0.875        # give = cost x 0.875 (~0.35%)
+FLOOR_COST_MULT = 0.25      # floor= cost x 0.25  (~0.10%)
+SL_FLOOR_PCT = 0.50         # never tighter than this (spread wick protection)
+SL_CAP_PCT = 1.00           # never deeper than this (hard rail; old broken SL was 1.36%)
 
 # ---------------- PROMPT BUDGET (v3.1, recalibrated v3.3 10-01) ----------------
 # Measured on 48 logged calls 10-01: chars/token min 1.65, median 1.97 (dense
@@ -298,12 +316,18 @@ def bracket_for(spread_pct):
     noul question's threshold) derives from TP, so a wide-spread pair must promise
     a proportionally bigger move. Replaces v3's one-size-fits-all 1.5/0.7."""
     cost = spread_pct + MAKER_FEE_PCT + TAKER_FEE_PCT
+    # TP: wide fee-wall target (strategy choice) — unchanged.
     tp = min(max(cost * EDGE_MULT, MIN_TARGET_PCT), MAX_TARGET_PCT)
+    # Exit geometry: anchored to COST (market-noise), decoupled from the wide TP.
+    sl = min(max(cost * SL_COST_MULT, SL_FLOOR_PCT), SL_CAP_PCT)
+    arm = cost * ARM_COST_MULT
+    gb = cost * GB_COST_MULT
+    floor = cost * FLOOR_COST_MULT
     return {"cost_pct": round(cost, 3), "tp_pct": round(tp, 3),
-            "sl_pct": round(tp * SL_RATIO, 3),
-            "trail_arm_pct": round(tp * TRAIL_ARM_RATIO, 3),
-            "trail_giveback_pct": round(tp * TRAIL_GIVEBACK_RATIO, 3),
-            "trail_floor_pct": round(tp * TRAIL_FLOOR_RATIO, 3),
+            "sl_pct": round(sl, 3),
+            "trail_arm_pct": round(arm, 3),
+            "trail_giveback_pct": round(gb, 3),
+            "trail_floor_pct": round(floor, 3),
             "min_vol30_pct": round(tp * MIN_VOL30_MULT, 3)}
 
 def book_depth_eur(inst, levels=5):
