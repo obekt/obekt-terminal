@@ -55,7 +55,7 @@ import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, url
 # (generate.py) parses this constant from the engine source, so the displayed
 # version can never drift from the running engine again. Bump on every behavior
 # change and note it in the module docstring + skill.
-ENGINE_VERSION = "v3.6.2"
+ENGINE_VERSION = "v3.7"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
@@ -138,18 +138,25 @@ FALLBACK_PAIRS = ["NEAR-EUR", "ZEC-EUR", "SUI-EUR", "LINK-EUR"]  # scan failure 
 # wide-spread mover must promise a bigger move to be worth taking.
 MAKER_FEE_PCT = 0.10
 TAKER_FEE_PCT = 0.20
-EDGE_MULT = 7.0             # TP >= 7x all-in round-trip cost (replay 10-05: 4x->7x cut SL exits 16->7, trail 14->23, best net)
+EDGE_MULT = 4.0             # v3.7 (10-08): REVERTED 7->4. The wide TP never paid: over
+                            # the v3.6 experiment (10-05..08) every config was net-negative
+                            # (-0.34/trade cumulative) while the pre-v3.6 EDGE_MULT 4 window
+                            # was the ONLY positive one (+0.15/trade, 12 trades). Wide TP
+                            # needs wins to run ~2.5%+ to clear the fee wall; on EUR tape
+                            # (vol30 median ~0.5%) they rarely do, and the trail gives back
+                            # before the wide TP is reached. Back to the proven geometry.
 MIN_TARGET_PCT = 1.5        # never below the v3 fixed TP
 MAX_TARGET_PCT = 3.0        # never above what a scalp can reach in 90min
 SL_RATIO = 0.47             # SL = 0.47 x TP (v3's 0.7/1.5 ratio, preserved)
 TRAIL_ARM_RATIO = 0.40      # arm trailing at 0.40 x TP
 TRAIL_GIVEBACK_RATIO = 0.23 # exit after giving back 0.23 x TP from HWM
 TRAIL_FLOOR_RATIO = 0.07    # trailing exit never below 0.07 x TP
-MIN_VOL30_MULT = 0.40       # reachability gate DECOUPLED from the fee-wall TP
-                            # (v3.6.1, 10-06): 0.6 x TP demanded 1.4-1.8% vol30 after
-                            # EDGE_MULT 7 (vs tape median 0.49%) -> 1 trade in 8.5h.
-                            # 0.40 x ~2.5% TP ~= 1.0%: restores pre-v3.6 trade flow
-                            # while keeping the wide 7x bracket intact.
+MIN_VOL30_PCT = 0.9         # v3.7: ABSOLUTE reachability gate (was MIN_VOL30_MULT x TP).
+                            # Root cause of the v3.6 throughput collapse: this gate was a
+                            # MULTIPLE of TP, so widening TP silently widened the entry
+                            # filter. Now fixed at the proven pre-v3.6 value (0.9%) and
+                            # fully independent of TP — moving EDGE_MULT can no longer
+                            # choke or flood entries.
 MAX_SPREAD_PCT = 0.20       # widened from 0.12: EUR movers legitimately sit at
                             # 0.12-0.20%, and the cost-aware TP now pays for it
 
@@ -328,7 +335,7 @@ def bracket_for(spread_pct):
             "trail_arm_pct": round(arm, 3),
             "trail_giveback_pct": round(gb, 3),
             "trail_floor_pct": round(floor, 3),
-            "min_vol30_pct": round(tp * MIN_VOL30_MULT, 3)}
+            "min_vol30_pct": round(MIN_VOL30_PCT, 3)}
 
 def book_depth_eur(inst, levels=5):
     """EUR resting on the top N bid levels. Ticker spread/volume lie on thin
