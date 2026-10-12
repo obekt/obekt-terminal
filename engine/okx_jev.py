@@ -227,6 +227,7 @@ MIN_TAKER_BUY = 0.50      # net aggressive buying over last 30min
 # directional-probability floor.
 MARGIN_BAR = 0.30         # p(chosen buy) - p(no_trade) from Jev probabilities (replay 10-05: 0.25->0.30 WR 53.7->57.4%)
 CONF_BAR = 0.50           # OR-path: high certainty also passes
+CONF_FLOOR = 0.50         # v3.8 HARD floor: no entry below this certainty
 NOUL_BAR = 0.45           # noul = P(rise >= trail_arm% within 45min)
 MIN_STAKE_EUR = 10.0
 
@@ -1266,7 +1267,10 @@ def decide():
                 "max": MAX_JEV_INPUT_TOKENS, "state_chars": state_chars})
     rec = {"choice": choice, "conf": conf, "margin": margin, "noul": nouls.get(choice)}
     noul_ok = (nouls.get(choice) or 0) >= NOUL_BAR
-    edge_ok = (margin >= MARGIN_BAR) or (conf >= CONF_BAR)
+    # v3.8 (10-12 replay, 103 trades): conf<0.50 entries netted -9.89 EUR at
+    # 29% WR; conf>=0.50 kept -3.52 at 38%, positive combined with
+    # maker-only (+1.29). Hard floor now, margin gate kept as OR-path.
+    edge_ok = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
     if choice == "no_trade" or not edge_ok or not noul_ok:
         rec["acted"] = False
         logrec({"event": "no_trade", "choice": choice,
@@ -1346,26 +1350,15 @@ def decide():
                 ask_now = float(ticker(inst)["askPx"] or 0)
             except Exception:
                 ask_now = 0
-            if ask_now <= 0 or ask_now > bid * (1 + CHASE_MAX_PCT / 100):
-                rec["acted"] = False
-                rec["why"] = f"maker entry unfilled ({stt}), ask ran away"
-                logrec({"event": "entry_unfilled", "inst": inst, "state": stt, "ordId": ord_id,
-                        "bid": bid, "ask": ask_now})
-                return rec
-            # chase: market IOC for the remaining qty (taker fee 0.2%)
-            o = place_market(inst, "buy", qty)
-            ord_id = o.get("ordId")
-            time.sleep(1)
-            od = order_detail(inst, ord_id)
-            stt = od.get("state")
-            acc = float(od.get("accFillSz") or 0)
-            entry_type = "taker_chase"
-            if acc < float(ins["minSz"]):
-                rec["acted"] = False
-                rec["why"] = f"chase fill too small ({acc})"
-                logrec({"event": "entry_chase_failed", "inst": inst, "state": stt, "ordId": ord_id})
-                return rec
-            qty = round_step(acc, ins["lotSz"])
+            # v3.8 (10-12 replay): taker_chase banned — 23 chase entries
+            # netted -7.83 EUR (30% WR) vs maker avg. Paying 0.2% taker fee
+            # to chase momentum was the worst cost bucket. Unfilled maker =
+            # no trade; the signal can re-fire next cycle at the book.
+            rec["acted"] = False
+            rec["why"] = f"maker entry unfilled ({stt}), chase banned (v3.8)"
+            logrec({"event": "entry_unfilled", "inst": inst, "state": stt,
+                    "ordId": ord_id, "bid": bid, "ask": ask_now})
+            return rec
     fill_px = float(od.get("avgPx") or 0) or bid
     fee = od.get("fee")
     attach_failed = None
