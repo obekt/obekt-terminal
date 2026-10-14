@@ -55,7 +55,7 @@ import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, url
 # (generate.py) parses this constant from the engine source, so the displayed
 # version can never drift from the running engine again. Bump on every behavior
 # change and note it in the module docstring + skill.
-ENGINE_VERSION = "v3.7"
+ENGINE_VERSION = "v3.9"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
@@ -151,7 +151,7 @@ SL_RATIO = 0.47             # SL = 0.47 x TP (v3's 0.7/1.5 ratio, preserved)
 TRAIL_ARM_RATIO = 0.40      # arm trailing at 0.40 x TP
 TRAIL_GIVEBACK_RATIO = 0.23 # exit after giving back 0.23 x TP from HWM
 TRAIL_FLOOR_RATIO = 0.07    # trailing exit never below 0.07 x TP
-MIN_VOL30_PCT = 0.9         # v3.7: ABSOLUTE reachability gate (was MIN_VOL30_MULT x TP).
+MIN_VOL30_PCT = 0.75        # v3.9: 0.9->0.75, still ABSOLUTE (v3.7 comment follows) # v3.7: ABSOLUTE reachability gate (was MIN_VOL30_MULT x TP).
                             # Root cause of the v3.6 throughput collapse: this gate was a
                             # MULTIPLE of TP, so widening TP silently widened the entry
                             # filter. Now fixed at the proven pre-v3.6 value (0.9%) and
@@ -189,14 +189,14 @@ MAX_STATE_CHARS = 5400      # trim ceiling: keeps real input_tokens < 3400
 MAX_JEV_INPUT_TOKENS = 3400 # alarm threshold on Jev's reported input_tokens
 
 STABLES = ["USDC", "USDT"]   # swept to EUR every cycle (all-funds directive)
-MAX_OPEN = 2              # concentrated: fewer, better deals (v2's 3 diluted stake)
+MAX_OPEN = 1              # v3.9 user directive 10-14: bigger stakes - full bankroll per trade (slots were never the throughput bottleneck; gates were)
 MAX_ENTRIES_PER_CYCLE = 1 # one quality entry per cycle max
 TIME_STOP_MIN = 30        # close if losing after this
-STALE_EXIT_MIN = 90       # close flat-or-worse after this (capital rotation)
+STALE_EXIT_MIN = 60       # v3.9: 90->60 close flat-or-worse (faster rotation, 1 slot)
 FILL_WAIT_S = 25          # post_only entry patience before chase/cancel
 CHASE_MAX_PCT = 0.15      # IOC-take fallback only if ask within this % of bid
-COOLDOWN_MIN = 30         # per-pair cooldown after a LOSING exit
-WIN_COOLDOWN_MIN = 15     # per-pair cooldown after a PROFITABLE exit (v3.5,
+COOLDOWN_MIN = 20         # v3.9: 30->20 per-pair cooldown after a LOSING exit
+WIN_COOLDOWN_MIN = 10     # v3.9: 15->10 per-pair cooldown after a PROFITABLE exit (v3.5,
                           # 10-03). Measured leak: Oct 2 ran 8 CT-EUR round
                           # trips — winners interleaved with re-entry stops
                           # bought right after an exit high (net +€0.20 on
@@ -212,8 +212,8 @@ WIN_COOLDOWN_MIN = 15     # per-pair cooldown after a PROFITABLE exit (v3.5,
 # Kept only as a DISASTER backstop against software failure (e.g. a v2-style
 # re-entry churn loop): -8%/day is unreachable by legitimate gated trading.
 DAILY_LOSS_PCT = 8.0
-MIN_CHG30_PCT = 0.30      # momentum gate: chg_30min_pct must exceed this
-MIN_BARS_UP = 3           # of last 6 5m bars closing green
+MIN_CHG30_PCT = 0.15      # v3.9: 0.30->0.15 (top reject reason: 9653 blocks/6d; Jev conf floor still guards quality)
+MIN_BARS_UP = 2           # v3.9: 3->2 of last 6 5m bars green (7350 blocks/6d at 3)
 MIN_TAKER_BUY = 0.50      # net aggressive buying over last 30min
 # v3.3 decision bars (10-01 replay of 38 real Jev picks over 27h): the old
 # conf>=0.50 bar vetoed 35/38 picks — Jev's `confidence` is a certainty metric
@@ -1079,8 +1079,8 @@ def decide():
         if v.get("bars_up_of_6", 0) < MIN_BARS_UP:
             fails.append(f"bars_up {v.get('bars_up_of_6')}<{MIN_BARS_UP}")
         rpos = v.get("range30_pos_pct", 0)
-        if not (30 <= rpos <= 92):
-            fails.append(f"range30_pos {rpos} not in 30-92")
+        if not (25 <= rpos <= 95):   # v3.9: widened from 30-92 (6616 blocks/6d)
+            fails.append(f"range30_pos {rpos} not in 25-95")
         if fails:
             logrec({"event": "quality_gate_reject", "inst": k, "fails": fails})
         else:
