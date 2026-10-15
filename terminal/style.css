@@ -293,6 +293,44 @@ tr:hover{background:inherit}
 .eco-v.g{color:var(--green)}.eco-v.r{color:var(--red)}
 .eco-s{color:var(--gray);font-size:9px}
 
+/* ---------- v4: X-Perps two-way book ---------- */
+.pos-badge{border:1px solid var(--border);padding:1px 8px;letter-spacing:1px}
+.pos-badge.flat{color:var(--gray)}
+.pb-side{font-weight:700;margin-right:8px}
+.pb-side.l{color:var(--green)}
+.pb-side.s{color:var(--red)}
+.perp-grid{display:flex;flex-direction:column;gap:8px}
+.perp-kpis{display:flex;flex-wrap:wrap;gap:6px}
+.pk{flex:1 1 150px;background:#0c0a04;border:1px solid var(--border);border-left:2px solid var(--amber-dim);
+  padding:5px 8px;display:flex;flex-direction:column;gap:1px}
+.pkl{color:var(--gray);font-size:9px;letter-spacing:1px;text-transform:uppercase}
+.pkv{font-size:15px;font-weight:700;color:var(--amber)}
+.pkv.w{color:var(--white)}.pkv.pos{color:var(--green)}.pkv.neg{color:var(--red)}
+.pks{color:var(--gray);font-size:9px}
+.perp-sec{border-top:1px dotted #241f10;padding-top:5px}
+.perp-h{color:var(--amber-dim);font-size:9.5px;letter-spacing:2px;margin-bottom:3px;text-transform:uppercase}
+.perp-flat{font-size:10px;line-height:1.6}
+.long-tag{color:var(--green);font-weight:700}
+.short-tag{color:var(--red);font-weight:700}
+tr.row-long td{border-left:2px solid transparent}
+tr.row-short td{border-left:2px solid transparent}
+tr.row-long td:first-child{border-left:2px solid var(--green-dim)}
+tr.row-short td:first-child{border-left:2px solid #7a231c}
+tr.row-long:hover td{background:#04180c!important}
+tr.row-short:hover td{background:#1a0806!important}
+.perp-decision{font-size:11px;color:var(--white);margin-bottom:5px;letter-spacing:.5px}
+.twoway{display:flex;flex-direction:column;gap:3px}
+.tw-row{display:grid;grid-template-columns:52px 1fr 96px 74px;gap:6px;align-items:center;
+  padding:2px 4px;border-left:2px solid transparent}
+.tw-row.chosen{border-left-color:var(--amber);background:#141004}
+.tw-name{color:var(--amber);font-weight:700;font-size:10.5px}
+.tw-bar{display:flex;height:9px;background:#111;border:1px solid #221c0a;overflow:hidden}
+.tw-long{background:linear-gradient(90deg,#0a7a30,#00e04b)}
+.tw-no{background:#2b2b2b}
+.tw-short{background:linear-gradient(90deg,#ff3b30,#7a231c)}
+.tw-nums{font-size:10px;text-align:right;white-space:nowrap}
+.tw-noul{font-size:9.5px;color:var(--gray);text-align:right;white-space:nowrap}
+
 @media (max-width:1100px){
   #grid{grid-template-columns:repeat(2,1fr)}
   .panel.wide{grid-column:span 2}

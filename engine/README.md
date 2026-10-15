@@ -1,7 +1,9 @@
-# `engine/` — the autonomous trader
+# `engine/` — the autonomous traders
 
-The strategy, in code. One process, four modes, no daemon needed — a scheduler
-(cron/systemd timer/whatever) calls it every 5 minutes.
+**Two books, two engines.** The strategy in code. Each is a one-shot process
+called by a scheduler (cron/systemd timer) every 5 minutes — no daemon needed.
+They are isolated by design: separate collateral, state files, kill-switches and
+daily breakers, so a bug in one book can't drain the other.
 
 > ⚠️ **This trades real money on real exchanges.** Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 > Start in demo/paper if your venue offers it. Nothing here is advice.
@@ -10,12 +12,17 @@ The strategy, in code. One process, four modes, no daemon needed — a scheduler
 
 | file | what it is |
 |---|---|
-| `okx_jev.py` | The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1450 lines, stdlib only (no pip deps). |
-| `news_feed.py` | Keyless RSS catalyst feed (Cointelegraph/CNBC/Yahoo Finance) → `catalyst.json`, 30-min freshness guard. Called by `cycle`. |
-| `social_feed.py` | Keyless sentiment: alternative.me Fear&Greed (+ streak), CoinGecko trending + per-coin community polls, vs-EUR market context → `social.json`, 15-min cache. Called by `cycle`. |
+| `okx_jev.py` | **SPOT book (long-only, EUR pairs).** The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1600 lines, stdlib only (no pip deps). |
+| `okx_perp.py` | **X-PERP book (two-way: LONG + SHORT, USD-settled MiFID expiry-perps).** Imports `okx_jev` for the signed API client, market data and the Jev client — it does not duplicate them. Own state (`perp_*.json`), USDC collateral, 1× isolated margin, liquidation-distance guard. Two-sided Jev: scores `p(long)` and `p(short)` per contract. ~700 lines. |
+| `news_feed.py` | Keyless RSS catalyst feed (Cointelegraph/CNBC/Yahoo Finance) → `catalyst.json`, 30-min freshness guard. Called by spot `cycle`. |
+| `social_feed.py` | Keyless sentiment: alternative.me Fear&Greed (+ streak), CoinGecko trending + per-coin community polls, vs-EUR market context → `social.json`, 15-min cache. Called by spot `cycle`. |
 
-Everything the engine writes (log, state, caches) lands next to `okx_jev.py`
-in its own directory — point `OKX_TERMINAL_BASE` there if you keep it elsewhere.
+Each engine writes its own log/state/caches next to itself — point
+`OKX_TERMINAL_BASE` at that directory if you keep it elsewhere. The perp engine
+requires an OKX EEA account with **X-Perps unlocked** (appropriateness assessment
+passed → account level 2) and USDC collateral; without that, derivative orders
+return error 50124/51010 and it stays flat. See
+[`../skills/okx-trading/SKILL.md`](../skills/okx-trading/SKILL.md).
 
 ## Credentials
 
@@ -74,29 +81,52 @@ rm engine/STOP        # resume (a daily-breaker STOP also auto-clears at UTC mid
 ## The strategy surface (tune these)
 
 All at the top of `okx_jev.py`, each with a comment explaining the measured
-reasoning behind the value:
+reasoning behind the value. **These are the live production values** — the deck's
+`DECISION GATES` panel parses them from source so the UI can never drift from what
+the engine actually enforces.
 
 | constant | default | meaning |
 |---|---|---|
 | `MAX_JEV_PAIRS` | 5 | how many gate-survivors the model sees (prompt-size bound) |
-| `EDGE_MULT` | 7.0 | take-profit ≥ 7× all-in round-trip cost — the fee-wall rule (raised from 4× after the 10-05 replay study: wider TP cut hard stop-loss exits ~56% and let the trailing exit own more of each move) |
+| `EDGE_MULT` | 4.0 | take-profit ≥ 4× all-in round-trip cost — the fee-wall rule (7× was tried 10-05..08 and reverted: every wide-TP config was net-negative) |
 | `MIN_TARGET_PCT` / `MAX_TARGET_PCT` | 1.5 / 3.0 | TP clamp — a scalp must be reachable in ~90 min |
-| `SL_RATIO` | 0.47 | stop = 0.47 × TP |
+| `SL_COST_MULT` | 1.75 | stop anchored to **cost** (spread+fees), not to TP — decoupling these fixed a 10-07 avg-loss-doubling regression |
 | `TRAIL_ARM_RATIO` / `TRAIL_GIVEBACK_RATIO` / `TRAIL_FLOOR_RATIO` | 0.40 / 0.23 / 0.07 | trailing exit: arm at 40% of TP, exit after giving back 23% from HWM, never below 7% |
-| `MARGIN_BAR` | 0.30 | p(chosen buy) − p(no_trade) from Jev's typed probabilities (0.25 → 0.30 on 10-05: replay win rate 53.7% → 57.4%) |
-| `CONF_BAR` | 0.50 | OR-path: high certainty also passes |
+| `MARGIN_BAR` | 0.30 | p(chosen) − p(no_trade) from Jev's typed probabilities |
+| `CONF_BAR` / `CONF_FLOOR` | 0.50 / 0.50 | OR-path certainty bar, and a **hard floor** (v3.8: sub-0.50 conf trades lost €9.89 at 29% WR) |
 | `NOUL_BAR` | 0.45 | Jev's P(price rises ≥ trail-arm within 45 min) floor |
-| `MAX_OPEN` / `MAX_ENTRIES_PER_CYCLE` | 2 / 1 | concentration + one quality entry per cycle |
-| `COOLDOWN_MIN` / `WIN_COOLDOWN_MIN` | 30 / 15 | per-pair lockout after a loss / after a win (a TP exit marks the local top) |
-| `TIME_STOP_MIN` / `STALE_EXIT_MIN` | 30 / 90 | close losers after 30m, flat positions after 90m |
+| `MAX_OPEN` / `MAX_ENTRIES_PER_CYCLE` | 1 / 1 | v3.9: full bankroll per trade, one quality entry per cycle |
+| `COOLDOWN_MIN` / `WIN_COOLDOWN_MIN` | 20 / 10 | per-pair lockout after a loss / after a win (a TP exit marks the local top) |
+| `TIME_STOP_MIN` / `STALE_EXIT_MIN` | 30 / 60 | close losers after 30m, flat positions after 60m |
+| `UNIVERSE_EXCLUDE` | {NEAR-EUR} | v3.10: the only instrument-level filter that held positive out-of-sample (NEAR bled −€6.09 at 27% WR) |
 | `DAILY_LOSS_PCT` | 8.0 | software-failure backstop; auto-clears at UTC roll |
 | `MIN_STAKE_EUR` | 10.0 | venue minimum sanity floor |
 
-Sizing: stake = all free EUR / open slots (configurable philosophy — change
-`decide()` if you want fixed sizing). Entry: maker-first `post_only`, IOC chase
-only if the ask is within `CHASE_MAX_PCT` of the bid. Exits: server-side OCO is
-the first line (they fire even if this machine dies); the poll loop owns
-trailing, time-stops and the fallback stop.
+Sizing: stake = all free EUR / open slots. Entry: maker-first `post_only`; **no
+IOC chase** (v3.8 — taker-chasing was the worst cost bucket; unfilled = no trade,
+the signal can re-fire next cycle). Exits: server-side OCO is the first line (they
+fire even if this machine dies); the poll loop owns trailing, time-stops and the
+fallback stop. Unhurried rotation exits (time-stop/stale) sell `post_only` as maker
+to halve their fee (v3.10); urgent exits stay market.
+
+### The X-Perp book (`okx_perp.py`)
+
+Same shape, two-way. Key constants at its top:
+
+| constant | default | meaning |
+|---|---|---|
+| `PERP_LEV` | 1 | isolated leverage; 1× = margin equals notional (liquidation ~99% away) |
+| `MAX_NOTIONAL_USD` / `MAX_NOTIONAL_FRAC` | 25 / 0.7 | hard cap + fraction of USDC equity per position |
+| `PERP_MAKER_PCT` / `PERP_TAKER_PCT` | 0.02 / 0.05 | X-Perp fees — ~0.07% round trip vs spot's ~0.3% |
+| `MIN_TARGET_PCT` / `MAX_TARGET_PCT` | 0.6 / 2.0 | TP clamp, shrunk because the perp round trip is ~4× cheaper |
+| `CONF_FLOOR` | 0.40 | **burn-in value** (10-15): Jev emits lower confidence on these instruments; spot's 0.50 blocked 15/16 calls. Recalibrate from ~30 closed perp trades. |
+| `LIQ_BUFFER_PCT` | 15 | force-close if price comes within 15% of the exchange liquidation price |
+
+Two-sided decision: for each contract Jev returns `p(long_k)`, `p(short_k)`,
+`p(no_trade)` plus a rise- **and** a fall-probability (`noul`); the engine takes
+whichever direction clears `MARGIN_BAR`/`CONF_FLOOR`/`NOUL_BAR`. Shorts close
+`reduceOnly`. The engine respects a shared `STOP` and has its own `STOP_PERP`
+breaker. `--dry-run` runs the full decision path with zero order placement.
 
 ## What the log looks like
 

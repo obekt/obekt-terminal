@@ -32,8 +32,8 @@ Two pieces, both in this repo:
 
 | | What it does |
 |---|---|
-| **`engine/`** — the trader | Scans ~270 EUR spot pairs every 5 minutes, filters them with deterministic liquidity/momentum/depth gates, injects live **news + sentiment + macro**, asks the **Jev System-One** decision model for a *typed* verdict (probabilities, not prose), and if the bar is cleared, enters maker-first and manages the exit with **server-side OCO + trailing stops**. Risk lives in code, never in the model. |
-| **`terminal/`** — the observation deck | A **Bloomberg-style text UI** (pure HTML/CSS/JS, no framework) that reads the engine's raw log and renders it: equity curve, selectivity funnel, decision scatter, the exact prompt state the model saw, a candlestick replay of every trade, and a **local LLM** writing the desk commentary. **Nothing is clickable except the trade replay** — it is observation only, by design. |
+| **`engine/`** — the traders | **Two engines, two books.** `okx_jev.py` scans ~270 EUR spot pairs every 5 minutes (long-only); `okx_perp.py` scans USD-settled X-Perp contracts and trades **both directions — long *and* short** (MiFID expiry-perps, USDC collateral, 1× isolated). Both filter with deterministic liquidity/momentum/depth gates, inject live **news + sentiment + macro + funding**, ask the **Jev System-One** decision model for a *typed* verdict (probabilities, not prose — on the perp book: `p(long)` and `p(short)`), and if the bar is cleared, enter maker-first and manage the exit with **server-side OCO + trailing stops**. Risk lives in code, never in the model. Isolated state, collateral, kill-switches and daily breakers per book. |
+| **`terminal/`** — the observation deck | A **Bloomberg-style text UI** (pure HTML/CSS/JS, no framework) that reads both engines' raw logs and renders them: an always-visible open-position badge (▲ green long / ▼ red short), live two-way X-Perp book with per-pair long-vs-short probability bars, equity curve in %, selectivity funnel, decision scatter, the exact prompt state the model saw, a candlestick replay of every trade, and a **local LLM** writing the desk commentary. **Nothing is clickable except the trade replay** — it is observation only, by design. |
 
 The thesis, in one line: **a cheap typed decision-model chooses, deterministic code enforces risk, a local LLM explains, and a human watches — none of them parse each other's prose.**
 
@@ -69,33 +69,59 @@ And the piece that makes people lean in — **click any trade in the ledger** an
 
 ## How it thinks (the architecture)
 
+The system runs **two books side by side**, each its own isolated engine on its
+own systemd timer, sharing one kill-switch and one decision model:
+
+- **SPOT** (`engine/okx_jev.py`, EUR pairs) — **long-only** by venue constraint.
+  Buys EUR-quoted spot, exits via server-side OCO + trailing stop. Bankroll in EUR.
+- **X-PERPS** (`engine/okx_perp.py`, USD-settled MiFID expiry-perps) — **two-way:
+  LONG *and* SHORT**. This is the shorting book: it can profit when price falls.
+  Collateral in USDC, 1× isolated margin, own liquidation-distance guard. Fees are
+  ~0.07% round-trip (vs spot's ~0.3%) — the reason a two-way book exists at all.
+
 ```
-   every 5 minutes, unattended:
+   every 5 minutes, unattended (each book on its own timer):
    ┌──────────────────────────────────────────────────────────────┐
-   │ 1. SCAN      ~271 EUR spot pairs   (keyless public feed)        │
+   │ 1. SCAN      spot: ~271 EUR pairs · perp: crypto X-Perps       │
+   │              (keyless public feed / private instruments)       │
    │ 2. FILTER    liquidity · spread · 24h range · top-5 book depth  │  ← deterministic code
    │ 3. GATE      30m trend · green bars · range pos · taker share   │     rejects 99%+
    │ 4. CONTEXT   RSS news · Fear&Greed · funding · econ calendar    │  ← keyless feeds
    │              multi-timeframe 30m / 4h / 7d                       │
-   │ 5. DECIDE    ── Jev System-One ──►  typed: p(buy) · noul · conf │  ← $0.04 / 1M tok
-   │ 6. VETO      margin≥.25 or conf≥.5, AND noul≥.45                │  ← code owns risk
-   │              then LIVE book re-check: depth ≥ 3× stake           │
-   │ 7. EXECUTE   maker-first entry · stake = free cash / slots       │
+   │ 5. DECIDE    ── Jev System-One ──►  typed probabilities + conf  │  ← $0.04 / 1M tok
+   │              spot: p(buy) per pair · perp: p(long) AND p(short)  │     perp is TWO-WAY
+   │ 6. VETO      margin≥.30 or conf≥.5, AND conf≥.50 floor,         │  ← code owns risk
+   │              AND noul≥.45 · then LIVE book re-check ≥3× stake    │
+   │ 7. EXECUTE   maker-first entry (unfilled = no chase) ·           │
    │              server-side OCO TP/SL attached at fill              │
    │ 8. MANAGE    HWM trailing stop re-armed on-exchange · time-stop  │  ← survives even if
-   │              cooldowns · −8% daily breaker                       │     this box dies
+   │              cooldowns · −8% daily breaker (per book)            │     this box dies
    └──────────────────────────────────────────────────────────────┘
                           │
                           ▼  raw JSONL telemetry (every scan, gate, vote, fill)
    ┌──────────────────────────────────────────────────────────────┐
-   │  THE TERMINAL  reads the log → renders it → a local LLM writes   │
-   │                the desk note. Observation only. Nothing staged.  │
+   │  THE TERMINAL  reads both logs → renders them → a local LLM     │
+   │                writes the desk note. Observation only.          │
    └──────────────────────────────────────────────────────────────┘
 ```
 
-**The key design decision:** the decision model returns **typed JSON** (`p(buy)` per pair, a `noul` rise-probability, a `confidence`) — **never free text**. So there is no prompt-injection surface, no number hallucination, and nothing to parse. The model is an *advisor*; **deterministic code is the risk manager** and holds veto power. The local LLM only ever *explains* facts that are already in the engine state — it never decides, and it can't invent a number that isn't there.
+**The key design decision:** the decision model returns **typed JSON** (probabilities
+per action, a `noul` move-probability, a `confidence`) — **never free text**. So there
+is no prompt-injection surface, no number hallucination, and nothing to parse. On the
+perp book the same typed interface expresses **both directions**: the model scores
+`p(long)` and `p(short)` per contract plus a rise- *and* a fall-probability, and the
+engine picks whichever clears its bars. The model is an *advisor*; **deterministic code
+is the risk manager** and holds veto power. The local LLM only ever *explains* facts
+that are already in the engine state — it never decides, and it can't invent a number
+that isn't there.
 
-Full detail lives in the skills: [`skills/system-one-decisions`](skills/system-one-decisions/SKILL.md) (how to use a typed decision model well) and [`skills/okx-trading`](skills/okx-trading/SKILL.md) (venue specifics, the fee wall, the pitfalls we hit live).
+**Why two engines, not one:** different collateral (EUR vs USDC), different risk model
+(spot has no liquidation; perps do), different order mechanics (base-ccy quantity vs
+contracts), independent kill-switches and daily breakers. A bug in one book can't drain
+the other. The perp engine *imports* the spot engine's plumbing (signed API, market
+data, the Jev client) rather than duplicating it.
+
+Full detail lives in the skills: [`skills/system-one-decisions`](skills/system-one-decisions/SKILL.md) (how to use a typed decision model well) and [`skills/okx-trading`](skills/okx-trading/SKILL.md) (venue specifics, the fee wall, the X-Perp shorting path, the pitfalls we hit live).
 
 ---
 

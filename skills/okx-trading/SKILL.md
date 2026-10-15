@@ -237,6 +237,69 @@ Strategy directive: fast trades, take profit immediately, volume regime.
   outage only freezes the site's commentary (cache fallback shows the last good
   note); trading decisions and the whole engine are fully unaffected.
 
+## 2e. X-Perps — the shorting path for EEA (verified live 10-15)
+
+**EEA spot accounts cannot short.** Spot margin and all USDT pairs return 51155
+("local compliance restrictions"); there are ZERO EUR-quoted margin/futures
+instruments. The only compliant short path is **X-Perps**: MiFID-regulated
+USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
+10x max retail, behaving like perpetuals with a ~60-month settlement date.
+
+- **Unlock path** (all three required, in order): (1) pass the X-Perp
+  appropriateness assessment in the web UI (linked from the X-Perps FAQ page) —
+  this auto-bumps `acctLv` 1→2; (2) enable trading permission for the market on
+  the API key (API Management) — without it every derivative order returns
+  **50124** "API Key does not have trading permission for the market"; (3) hold
+  USDC in the TRADING account (account-mode changes sweep balances to Funding —
+  transfer back manually; the API transfer may return 50120 without transfer perm).
+- **Discovery**: use PRIVATE `/api/v5/account/instruments?instType=FUTURES` —
+  account-scoped, populates only after unlock (242 `*_XPERP` contracts). The
+  PUBLIC catalog is the global list and is misleading in both directions (shows
+  USDT margin pairs you can't trade; the private feed is the truth).
+- Naming: `<BASE>-USD_UM_XPERP-<yymmdd>`; ctVal e.g. 0.0001 BTC; **sz is in
+  CONTRACTS, not base ccy**; tdMode=isolated; close with `reduceOnly`.
+- **Fees 0.02% maker / 0.05% taker** ≈ 0.07% round trip vs EUR spot's ~0.3% —
+  the fee wall that made the spot book net-negative (-21 EUR on gross +3.8 over
+  128 trades) does not exist here.
+- Error map: 50124 = key not enabled for market; 51010 = account mode still 1;
+  51155 = compliance (USDT/spot-margin, permanent for EEA retail); 54000 =
+  "Margin trading is not supported" (spot margin product absent); 51008 =
+  genuine collateral shortfall (order path works).
+- **Probe pitfall**: a too-small probe order returns 51020 (min size), MASKING
+  the real permission error — always probe at ≥ minSz, far-off post_only, then
+  cancel.
+- 1x isolated on BTC short: exchange liqPx was 98.6% away — liquidation is a
+  non-event for scalps, but keep a liq-distance guard if leverage ever rises.
+- Two-sided Jev: per contract noul p_up AND p_dn + choice {long_k, short_k,
+  no_trade}; direction-specific noul must clear NOUL_BAR. Jev emits LOWER
+  confidence on perps than spot (avg 0.32 vs 0.5-0.8 over first 16 calls) —
+  spot-calibrated CONF_FLOOR 0.50 blocked 15/16; burn-in floor 0.40 at tiny
+  notional until ~30 trades provide evidence.
+
+## Version catch-up (v3.8 → v4.1, all replay-driven)
+
+- **v3.8 (10-12)**: maker-only entries (IOC chase DELETED — taker_chase was the
+  worst bucket: 23 trades, -7.83 EUR) + hard CONF_FLOOR 0.50. Zero-fee replay of
+  105 trades: gross edge +41.7% WR / PF 1.19 is REAL but thin; fees are the enemy.
+- **v3.9 (10-14)**: aggressive mode — MAX_OPEN 1 (full bankroll/trade), looser
+  momentum gates (chg30 0.15, bars_up 2/6, vol30 0.75), faster rotation
+  (cooldowns 20/10, stale 60m).
+- **v3.10 (10-15)**: NEAR-EUR banned from universe (only filter positive in BOTH
+  out-of-sample halves; NEAR: -6.09 EUR, 27% WR — and 15% WR at conf>=0.60, its
+  WORST band); unhurried exits (time-stop/stale) sell post_only maker + 45s market
+  fallback. **OCO TP legs can NEVER be maker** (trigger fires at/through the level
+  → any limit there crosses the book). conf>=0.60 floor FAILED out-of-sample
+  (+5.64 / -4.46 halves) — no entry-filter change was adopted.
+- **v4.0/v4.1-perp (10-15)**: two-way X-Perp book live (see §2e). Isolated
+  engine importing the spot plumbing; USDC collateral; USDC REMOVED from the spot
+  engine's STABLES sweep list (it would have sold the perp collateral every cycle).
+  v4.1: perp CONF_FLOOR 0.50→0.40 burn-in after 15/16 calls were blocked.
+- **Observability lesson (10-15)**: the deck hardcoded gate thresholds
+  (margin≥0.25, cooldowns 15/30) and drifted from the engine twice. UI must PARSE
+  thresholds from engine source, never hardcode. Also: account-level P&L must be
+  % of LAUNCH capital, not sum-of-per-trade-%-of-stake (stakes varied 18→120 EUR;
+  the naive sum showed -32% vs the true -14.2%).
+
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 
 - v3 rebuilt after 24h live post-mortem: 29 opens, ledger-verified ~3W/13L,

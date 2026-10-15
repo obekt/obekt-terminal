@@ -41,6 +41,23 @@
     $("engine-meta").textContent =
       D.engine.version + " · " + D.engine.venue + " · " + D.engine.mode +
       " · DECISIONS: " + D.engine.decision_model;
+    // persistent open-position badge (visible while scrolled anywhere on page)
+    const badge = document.getElementById("pos-badge");
+    if (badge) {
+      const ob = openBook(D);
+      if (!ob.length) {
+        badge.textContent = "◆ FLAT — NO OPEN POSITION";
+        badge.className = "topmeta pos-badge flat";
+      } else {
+        badge.innerHTML = ob.map(r => {
+          const arrow = r.side === "short" ? "▼" : "▲";
+          const upc = (r.upc === null || r.upc === undefined) ? "" : " " + sgn(r.upc) + "%";
+          return '<span class="pb-side ' + (r.side === "short" ? "s" : "l") + '">' + arrow + " " +
+            esc(r.inst) + upc + "</span>";
+        }).join(" ");
+        badge.className = "topmeta pos-badge";
+      }
+    }
     $("contact").textContent = D.contact;
     const genMs = Date.parse(D.generated);
     const ageMin = Math.round((Date.now() - genMs) / 60000);
@@ -76,9 +93,10 @@
         ' <span class="' + (t.chg24h_pct >= 0 ? "up" : "dn") + '">' + sgn(t.chg24h_pct) + "%</span>";
     });
     const eq = D.equity || {};
+    const st = D.stats || {};
     const head = '<b>EQ</b> ' + eur(eq.equity_eur) +
-      ' <span class="' + ((eq.day_pnl_eur || 0) >= 0 ? "up" : "dn") + '">' + sgn(eq.day_pnl_eur) +
-      " (" + sgn(eq.day_pnl_pct) + '%)</span>  <span class="dim">·</span>  ';
+      ' <span class="' + ((eq.day_pnl_eur || 0) >= 0 ? "up" : "dn") + '">' + sgn(eq.day_pnl_pct) +
+      '%</span> <span class="dim">ALL ' + sgn(st.net_all_pct) + '%</span>  <span class="dim">·</span>  ';
     const fg = (D.sentiment || {}).fear_greed;
     const tail = fg ? '  <span class="dim">·</span>  <b>F&amp;G</b> ' + fg.value + " " + esc(fg.label) : "";
     const line = head + parts.join('  <span class="dim">·</span>  ') + tail + "   ▚▚▚   ";
@@ -86,6 +104,21 @@
   }
 
   /* ---------- HERO ---------- */
+  function openBook(D) {
+    // One-line live summary across BOTH books (spot EUR + X-Perp USDC).
+    const rows = [];
+    (D.positions || []).forEach(p => rows.push({
+      book: "SPOT", side: "long", inst: (p.inst || "").replace("-EUR", ""),
+      upc: p.upc, note: "€" + fmt(p.stake_eur)
+    }));
+    const P = D.perp || {};
+    (P.positions || []).forEach(p => rows.push({
+      book: "PERP", side: p.side || "long",
+      inst: (p.inst || "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, ""),
+      upc: p.upc, note: "$" + fmt(p.notional_usd)
+    }));
+    return rows;
+  }
   function renderHero(D) {
     const e = D.equity || {}, s = D.stats || {}, f = D.funnel || {};
     const j = D.jev_latest || {};
@@ -95,13 +128,25 @@
     const pnlCls = (e.day_pnl_eur || 0) >= 0 ? "g" : "r";
     const choice = (j.choice || "—").toUpperCase();
     const noTrade = j.choice === "no_trade" || !j.choice;
+    // OPEN POSITION cell — the single most important live fact, so it leads.
+    const ob = openBook(D);
+    let posV, posSub, posCls;
+    if (!ob.length) {
+      posV = "FLAT"; posSub = "no open position · both engines in cash"; posCls = "w";
+    } else {
+      const r = ob[0];
+      const arrow = r.side === "short" ? "▼ SHORT" : "▲ LONG";
+      posV = arrow + " " + r.inst + (ob.length > 1 ? " +" + (ob.length - 1) : "");
+      posSub = (r.upc === null || r.upc === undefined ? "" : sgn(r.upc) + "% · ") + r.book + " · " + r.note;
+      posCls = r.side === "short" ? "r" : "g";
+    }
     $("hero-body").innerHTML =
-      cell("EQUITY", eur(e.equity_eur), "live capital · EUR", "w", true) +
-      cell("TODAY", sgn(e.day_pnl_eur) + "€", sgn(e.day_pnl_pct) + "% · " + (e.day_trades || 0) + " trades", pnlCls, true) +
-      cell("TRADES", s.trades_all, fmt(s.win_rate_pct, 1) + "% win rate", "w") +
-      cell("CYCLES RUN", (f.cycles || 0).toLocaleString(), "~" + Math.round((f.cycle_median_s || 300) / 60) + "m cadence · unattended", "") +
-      cell("JEV CALLS", f.jev_calls, (f.buy_picks || 0) + " buy votes → " + (f.opens || 0) + " opened", "") +
-      cell("LATEST VOTE", noTrade ? "FLAT" : choice.replace("BUY_", "▲ "), noTrade ? "standing aside" : "conf " + fmt(j.confidence), noTrade ? "w" : "g") +
+      cell("OPEN POSITION", posV, posSub, posCls, true) +
+      cell("EQUITY", eur(e.equity_eur), "spot EUR + $" + fmt((D.perp || {}).usdc_equity) + " perp USDC", "w", true) +
+      cell("TODAY", sgn(e.day_pnl_pct) + "%", (e.day_trades || 0) + " trades closed", pnlCls, true) +
+      cell("ALL-TIME", sgn(s.net_all_pct) + "%", s.trades_all + " trades · " + fmt(s.win_rate_pct, 1) + "% win", cls(s.net_all_pct)) +
+      cell("LATEST VOTE", noTrade ? "FLAT" : choice.replace("BUY_", "▲ ").replace("SHORT_", "▼ "), noTrade ? "model: standing aside" : "conf " + fmt(j.confidence), noTrade ? "w" : "g") +
+      cell("CYCLES RUN", (f.cycles || 0).toLocaleString(), (f.jev_calls || 0) + " model calls · ~5m each", "") +
       cell("UPTIME", f.uptime_h ? Math.floor(f.uptime_h / 24) + "D " + Math.round(f.uptime_h % 24) + "H" : "—", "since " + (f.first_ts || "").slice(5, 10), "w") +
       cell("MODEL COST", "$" + fmt(f.usd_today, 4), "today · avg " + (f.avg_input_tok || "?") + " tok/call", "g");
   }
@@ -124,11 +169,11 @@
     const st = s.streak || {};
     const rows =
       kpi("EQUITY", eur(e.equity_eur), (e.day_pnl_eur || 0) >= 0 ? "green" : "red", true) +
-      kpi("DAY P&L", sgn(e.day_pnl_eur) + " <small>(" + sgn(e.day_pnl_pct) + "%)</small>", cls(e.day_pnl_eur), true) +
+      kpi("DAY P&L", sgn(e.day_pnl_pct) + "%", cls(e.day_pnl_pct), true) +
       kpi("DAY TRADES", e.day_trades, "white") +
       kpi("TRADES ALL-TIME", s.trades_all, "white") +
       kpi("WIN RATE", fmt(s.win_rate_pct, 1) + "%", "white") +
-      kpi("NET P&L ALL", eur(s.net_all_eur), cls(s.net_all_eur)) +
+      kpi("NET P&L ALL", sgn(s.net_all_pct) + "%", cls(s.net_all_pct)) +
       kpi("PROFIT FACTOR", fmt(s.profit_factor), fmt(s.profit_factor) >= 1 ? "green" : "red") +
       kpi("AVG WIN / LOSS", eur(s.avg_win_eur) + " / " + eur(s.avg_loss_eur), "white") +
       kpi("AVG HOLD", fmt(s.avg_hold_min, 0) + "m", "white") +
@@ -194,15 +239,29 @@
     if (j && j.criteria) {
       const c = j.criteria;
       const na = !j.chosen_inst;
-      out.push(gateRow("MARGIN p(buy)−p(no_trade) ≥ 0.25", c.margin_ok, "bar " + fmt(c.margin_bar) + " · actual " + fmt(j.margin), na));
-      out.push(gateRow("ALT: CONFIDENCE ≥ 0.50", c.conf_ok, "actual " + fmt(j.confidence), na));
-      out.push(gateRow("NOUL RISE-PROB ≥ 0.45", c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(j.noul), na));
+      out.push(gateRow("MARGIN p(buy)−p(no_trade) ≥ " + fmt(c.margin_bar, 2), c.margin_ok, "bar " + fmt(c.margin_bar) + " · actual " + fmt(j.margin), na));
+      out.push(gateRow("ALT: CONFIDENCE ≥ " + fmt(c.conf_bar, 2), c.conf_ok, "actual " + fmt(j.confidence), na));
+      if (c.conf_floor !== undefined) {
+        const cfOk = na ? null : (j.confidence >= c.conf_floor);
+        out.push(gateRow("CONF FLOOR ≥ " + fmt(c.conf_floor, 2) + " (hard, v3.8+)", cfOk, "actual " + fmt(j.confidence) + " · conjunctive — OR-path still needs this", na));
+      }
+      out.push(gateRow("NOUL RISE-PROB ≥ " + fmt(c.noul_bar, 2), c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(j.noul), na));
       out.push(gateRow("FINAL ENGINE VERDICT", c.fire, c.fire ? "TRADE AUTHORIZED" : (na ? "JEV: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
     }
     out.push(gateRow("DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
     out.push(gateRow("DAILY LOSS BREAKER −8%", !r.breaked, r.breaked ? "TRIPPED — HALTED" : "clear"));
-    const cds = Object.keys(r.cooldowns || {});
-    out.push(gateRow("PAIR COOLDOWNS (win 15m / loss 30m)", true, cds.length ? cds.map(n => n.replace("-EUR", "")).join(" ") + " logged" : "none logged"));
+    // ACTIVE cooldowns only (exits map is historical; engine windows: loss 20m, win 10m)
+    const now = Date.now();
+    const active = [];
+    Object.entries(r.cooldowns || {}).forEach(([inst, e]) => {
+      const ts = Date.parse(e.ts || "");
+      if (!ts) return;
+      const ageMin = (now - ts) / 60000;
+      const win = (e.upc || 0) > 0;
+      const lim = win ? 10 : 20;
+      if (ageMin < lim) active.push(inst.replace("-EUR", "") + " " + Math.round(lim - ageMin) + "m");
+    });
+    out.push(gateRow("PAIR COOLDOWNS (win 10m / loss 20m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
     out.push(gateRow("MOMENTUM GATES PRE-JEV", true, "chg30 · bars_up · range30 · vol30 · taker share"));
     out.push(gateRow("SERVER-SIDE OCO TP/SL + HWM TRAIL", true, "exits execute on-exchange, even offline"));
     $("gates-body").innerHTML = out.join("");
@@ -210,8 +269,9 @@
 
   /* ---------- equity curve (SVG) ---------- */
   function renderEquity(D) {
-    const cum = (D.stats || {}).cum_pnl || [];
-    $("equity-meta").textContent = cum.length + " CLOSED TRADES · LEDGER-VERIFIED, NET OF FEES";
+    // v4: cumulative realized P&L as PERCENT, not fiat
+    const cum = (D.stats || {}).cum_pnl_pct || [];
+    $("equity-meta").textContent = cum.length + " CLOSED TRADES · LEDGER-VERIFIED, NET OF FEES · RETURN VS LAUNCH CAPITAL (%)";
     if (cum.length < 2) { $("equity-body").textContent = "AWAITING TRADES…"; return; }
     const W = 1000, H = 150, PAD = 8;
     const mn = Math.min(0, Math.min.apply(null, cum)), mx = Math.max(0, Math.max.apply(null, cum));
@@ -233,9 +293,9 @@
       '<path d="' + area + '" fill="' + colA + '"/>' +
       '<path d="' + path + '" fill="none" stroke="' + col + '" stroke-width="1.6"/>' +
       dots +
-      '<text x="' + (W - 8) + '" y="' + Math.max(12, Y(last) - 6).toFixed(1) + '" fill="' + col + '" font-size="12" text-anchor="end" font-family="monospace">' + sgn(last) + "€</text>" +
-      '<text x="8" y="' + (Y(mx) + 10).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">PEAK ' + sgn(mx) + "€</text>" +
-      '<text x="8" y="' + Math.min(H - 3, Y(mn) - 3).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">TROUGH ' + sgn(mn) + "€</text>" +
+      '<text x="' + (W - 8) + '" y="' + Math.max(12, Y(last) - 6).toFixed(1) + '" fill="' + col + '" font-size="12" text-anchor="end" font-family="monospace">' + sgn(last) + "%</text>" +
+      '<text x="8" y="' + (Y(mx) + 10).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">PEAK ' + sgn(mx) + "%</text>" +
+      '<text x="8" y="' + Math.min(H - 3, Y(mn) - 3).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">TROUGH ' + sgn(mn) + "%</text>" +
       "</svg></div>" +
       '<div class="dim" style="font-size:9.5px">← FIRST CLOSED TRADE ' + esc(mmdd_hhmm(trips.length ? trips[trips.length - 1].close_ts : "")) +
       " UTC · LATEST " + esc(mmdd_hhmm(trips.length ? trips[0].close_ts : "")) +
@@ -366,10 +426,42 @@
         "<td class='am'>" + fmt(b.trail_arm_pct, 2) + "/" + fmt(b.trail_giveback_pct, 2) + "</td></tr>";
     }).join("");
     $("universe-body").innerHTML =
+      '<div class="perp-h">BOOK 1 · SPOT EUR (LONG-ONLY)</div>' +
       '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(u.scanned_iso)) + ' UTC · ' +
       (u.n_eur_pairs || "?") + " EUR PAIRS → LIQUIDITY+RANGE+DEPTH FILTER → " + (u.n_candidates || "?") +
       ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO JEV · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
-      "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>";
+      "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>" +
+      perpUniverseHtml(D);
+  }
+
+  function perpUniverseHtml(D) {
+    const P = D.perp || {};
+    const sel = P.universe_selected || [];
+    const scanIso = P.universe_scanned_iso;
+    let html = '<div class="perp-h" style="margin-top:10px">BOOK 2 · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
+    if (!sel.length) {
+      html += '<div class="dim">SCAN ' + esc(mmdd_hhmm(scanIso)) + ' UTC · ' +
+        (P.universe || []).length + ' CONTRACTS SELECTED (detail pending next scan)</div>';
+      return html;
+    }
+    const rows = sel.map(s => {
+      const b = s.bracket || {};
+      const fnd = s.funding_bps;
+      return "<tr><td class='sym'>" + esc((s.inst || "").replace("-USD_UM_XPERP", " X-PERP").replace(/-\d{6}$/, "")) + "</td>" +
+        "<td>" + fmt(s.day_range_pct, 1) + "%</td>" +
+        "<td class='" + cls(s.chg24h_pct) + "'>" + sgn(s.chg24h_pct) + "%</td>" +
+        "<td>$" + fmt((s.vol24h_usd || 0) / 1e6, 2) + "M</td>" +
+        "<td>" + fmt(s.spread_pct, 3) + "%</td>" +
+        "<td>$" + ((s.top5_depth_usd || 0) / 1000).toFixed(1) + "k</td>" +
+        "<td class='" + ((fnd || 0) > 0 ? "neg" : (fnd || 0) < 0 ? "pos" : "dim") + "'>" + (fnd === null || fnd === undefined ? "—" : sgn(fnd, 2) + "bp") + "</td>" +
+        "<td class='cy'>±" + fmt(b.tp_pct, 2) + "%</td>" +
+        "<td class='neg'>−" + fmt(b.sl_pct, 2) + "%</td>" +
+        "<td class='am'>" + fmt(b.trail_arm_pct, 2) + "/" + fmt(b.trail_giveback_pct, 2) + "</td></tr>";
+    }).join("");
+    html += '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(scanIso)) +
+      " UTC · CRYPTO X-PERPS ONLY (STOCK/COMMODITY CONTRACTS EXCLUDED BY ALLOWLIST) · FUNDING + = LONGS PAY (SHORT-CARRY EDGE) · TP/SL APPLY IN POSITION DIRECTION</div>" +
+      "<table><tr><th>CONTRACT</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>FUNDING</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>";
+    return html;
   }
 
   /* ---------- positions ---------- */
@@ -398,6 +490,111 @@
         " · noul " + fmt(p.jev_noul, 2) + " · " + esc(p.entry_type || "-") + " · opened " + esc(mmdd_hhmm(p.opened_ts)) + " UTC · qty " + fmt(p.qty, p.qty > 100 ? 0 : 4) + "</span>" + sp + "</td></tr>";
     }).join("");
     $("pos-body").innerHTML = "<table><tr><th>PAIR</th><th>STAKE</th><th>ENTRY</th><th>LAST</th><th>UPNL%</th><th>UPNL €</th><th>HWM</th><th>TP%</th><th>SL%</th><th>TRAIL A/GB</th><th>AGE</th><th>PROTECTION</th></tr>" + rows + "</table>";
+  }
+
+  /* ---------- v4: X-Perps two-way book ---------- */
+  function renderPerp(D) {
+    const P = D.perp;
+    const panel = document.getElementById("p-perp");
+    if (!panel) return;
+    if (!P) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    const s = P.stats || {};
+    const sideTag = (side) => side === "short"
+      ? '<span class="short-tag">▼ SHORT</span>'
+      : '<span class="long-tag">▲ LONG</span>';
+    const j = P.last_jev || {};
+    const jChoice = (j.choice || "—");
+    const jDir = jChoice.startsWith("short_") ? "SHORT" : (jChoice.startsWith("long_") ? "LONG" : "FLAT");
+    const jCls = jDir === "SHORT" ? "neg" : (jDir === "LONG" ? "pos" : "dim");
+
+    let html = '<div class="perp-grid">';
+    // --- KPI strip ---
+    html += '<div class="perp-kpis">' +
+      '<div class="pk"><span class="pkl">COLLATERAL</span><span class="pkv w">$' + fmt(P.usdc_equity) + '</span><span class="pks">USDC · isolated</span></div>' +
+      '<div class="pk"><span class="pkl">REALIZED</span><span class="pkv ' + cls(s.net_all_pct) + '">' + sgn(s.net_all_pct) + '%</span><span class="pks">' + (s.trades_all || 0) + ' closed</span></div>' +
+      '<div class="pk"><span class="pkl">WIN RATE</span><span class="pkv w">' + fmt(s.win_rate_pct, 0) + '%</span><span class="pks">' + (s.longs || 0) + 'L / ' + (s.shorts || 0) + 'S</span></div>' +
+      '<div class="pk"><span class="pkl">LAST CALL</span><span class="pkv ' + jCls + '">' + (jDir === "FLAT" ? "FLAT" : jDir + " " + esc(jChoice.replace(/^(long|short)_/, "").toUpperCase())) + '</span><span class="pks">conf ' + fmt(j.conf) + ' · noul ' + fmt(j.noul) + '</span></div>' +
+      '<div class="pk"><span class="pkl">STATUS</span><span class="pkv ' + (P.halted ? "neg" : "pos") + '">' + (P.halted ? "HALTED" : (P.breaked ? "BREAKER" : "LIVE")) + '</span><span class="pks">1x lev · 5m cycle</span></div>' +
+      '</div>';
+    // --- v4: JEV TWO-WAY CALL — the short/sell decision breakdown ---
+    const pj = P.last_jev || {};
+    const pairs = pj.pairs || [];
+    if (pairs.length) {
+      const dirLbl = (pj.chosen_side === "short") ? "▼ SHORT" : (pj.chosen_side === "long" ? "▲ LONG" : "— FLAT");
+      const dirCls = (pj.chosen_side === "short") ? "short-tag" : (pj.chosen_side === "long" ? "long-tag" : "dim");
+      html += '<div class="perp-sec"><div class="perp-h">JEV TWO-WAY CALL · ' + esc(mmdd_hhmm(pj.ts)) + ' UTC</div>';
+      html += '<div class="perp-decision">DECISION <span class="' + dirCls + '" style="font-size:13px">' + dirLbl + '</span> ' +
+        esc((pj.chosen_inst || "").replace("-USD_UM_XPERP", " X-PERP").replace(/-\d{6}$/, "")) +
+        ' <span class="dim">· conf ' + fmt(pj.conf) + ' · margin ' + fmt(pj.margin) + ' · noul ' + fmt(pj.noul) +
+        ' · budget $' + fmt(pj.budget_usd) + ' · ' + ((pj.tokens||{}).in||"?") + '/' + ((pj.tokens||{}).out||"?") + ' tok</span></div>';
+      // per-pair diverging LONG vs SHORT probability bars
+      html += '<div class="twoway">';
+      pairs.slice().sort((a,b)=>((b.p_long||0)+(b.p_short||0))-((a.p_long||0)+(a.p_short||0))).forEach(p=>{
+        const pl = p.p_long||0, psh = p.p_short||0, pnt = 1 - pl - psh;
+        const base = esc((p.inst||"").replace("-USD_UM_XPERP","").replace(/-\d{6}$/,""));
+        const isChosen = p.inst === pj.chosen_inst;
+        html += '<div class="tw-row' + (isChosen ? " chosen" : "") + '">' +
+          '<div class="tw-name">' + base + '</div>' +
+          '<div class="tw-bar">' +
+            '<span class="tw-long" style="width:' + (pl*100).toFixed(1) + '%"></span>' +
+            '<span class="tw-no" style="width:' + (Math.max(0,pnt)*100).toFixed(1) + '%"></span>' +
+            '<span class="tw-short" style="width:' + (psh*100).toFixed(1) + '%"></span>' +
+          '</div>' +
+          '<div class="tw-nums"><span class="long-tag">' + (pl*100).toFixed(0) + '%▲</span> ' +
+            '<span class="short-tag">' + (psh*100).toFixed(0) + '%▼</span></div>' +
+          '<div class="tw-noul">↑' + fmt(p.noul_up) + ' ↓' + fmt(p.noul_dn) + '</div>' +
+          '</div>';
+      });
+      html += '</div>';
+      html += '<div class="dim" style="font-size:9px;margin-top:3px">BAR = P(LONG)▲ green · P(NO-TRADE) grey · P(SHORT)▼ red &nbsp;|&nbsp; NOUL ↑ = P(rise ≥ arm% in 45m), ↓ = P(fall ≥ arm% in 45m) &nbsp;|&nbsp; the spot book above only ever goes LONG — shorts live here</div>';
+      html += '</div>';
+    }
+    // --- open positions ---
+    const ps = P.positions || [];
+    html += '<div class="perp-sec"><div class="perp-h">OPEN POSITIONS</div>';
+    if (!ps.length) {
+      html += '<div class="dim perp-flat">FLAT — SCANNING ' + (P.universe || []).length + ' X-PERPS FOR TWO-WAY SETUPS EVERY CYCLE. FEES 0.02/0.05% = ROUND TRIP ~0.07%, A THIRD OF THE SPOT FEE WALL.</div>';
+    } else {
+      html += "<table><tr><th>SIDE</th><th>CONTRACT</th><th>ENTRY</th><th>LAST</th><th>UPNL%</th><th>NOTIONAL</th><th>LIQ PX</th><th>TP%</th><th>SL%</th><th>AGE</th><th>PROTECTION</th></tr>";
+      html += ps.map(p => {
+        const b = p.bracket || {};
+        const upc = p.upc, last = p.last, sgnSide = p.side === "short" ? "▼" : "▲";
+        return "<tr class='" + (p.side === "short" ? "row-short" : "row-long") + "'>" +
+          "<td>" + sideTag(p.side) + "</td>" +
+          "<td class='sym'>" + esc((p.inst || "").replace("-USD_UM_XPERP", " X-PERP").replace(/-\d{6}$/, "")) + "</td>" +
+          "<td>" + fmt(p.entry_ref, 4) + "</td>" +
+          "<td>" + fmt(last, 4) + "</td>" +
+          "<td class='" + cls(upc) + "'>" + sgn(upc) + "%</td>" +
+          "<td>$" + fmt(p.notional_usd) + "</td>" +
+          "<td class='dim'>" + (p.liq_px ? fmt(p.liq_px, 0) : "—") + "</td>" +
+          "<td class='cy'>+" + fmt(b.tp_pct, 2) + "</td><td class='neg'>−" + fmt(b.sl_pct, 2) + "</td>" +
+          "<td>" + (p.opened_ts ? esc(mmdd_hhmm(p.opened_ts)).slice(6) : "—") + "</td>" +
+          "<td>" + (p.algo_ok ? "<span class='pos'>SERVER OCO</span>" : "<span class='am'>POLL STOP</span>") + "</td></tr>";
+      }).join("") + "</table>";
+    }
+    html += '</div>';
+    // --- recent trades ---
+    const tr = P.trades || [];
+    html += '<div class="perp-sec"><div class="perp-h">RECENT CLOSED</div>';
+    if (!tr.length) html += '<div class="dim">AWAITING FIRST CLOSED X-PERP TRADE…</div>';
+    else html += "<table><tr><th>SIDE</th><th>CONTRACT</th><th>MOVE</th><th>NET%</th><th>REASON</th><th>CLOSED</th></tr>" +
+      tr.slice(0, 8).map(t =>
+        "<tr class='" + (t.side === "short" ? "row-short" : "row-long") + "'><td>" + sideTag(t.side) + "</td>" +
+        "<td class='sym'>" + esc((t.inst || "").replace("-USD_UM_XPERP", " X-PERP").replace(/-\d{6}$/, "")) + "</td>" +
+        "<td class='" + cls(t.upc) + "'>" + sgn(t.upc) + "%</td>" +
+        "<td class='" + cls(t.net_pct) + "'>" + sgn(t.net_pct) + "%</td>" +
+        "<td class='dim'>" + esc((t.reason || "").slice(0, 30)) + "</td>" +
+        "<td class='dim'>" + esc(mmdd_hhmm(t.close_ts)) + "</td></tr>").join("") + "</table>";
+    html += '</div>';
+    // --- universe strip ---
+    html += '<div class="perp-sec"><div class="perp-h">SCANNED UNIVERSE</div><div class="dim" style="font-size:10px">' +
+      (P.universe || []).map(u => esc(u.replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, ""))).join(" · ") +
+      '</div></div>';
+    html += '</div>';
+    $("perp-body").innerHTML = html;
+    const mEl = $("perp-meta");
+    if (mEl) mEl.textContent = "OKX Europe X-Perps (MiFID) · $" + fmt(P.usdc_equity) + " USDC · 1x isolated · long & short · fees 0.02/0.05%";
   }
 
   /* ---------- news ---------- */
@@ -954,9 +1151,9 @@
   }
   function setBaseTitle() {
     const D = CUR_DATA;
-    document.title = (D && D.equity && D.equity.day_pnl_eur !== undefined
-      ? ((D.equity.day_pnl_eur >= 0 ? "+" : "") + D.equity.day_pnl_eur.toFixed(2) + "€ · ")
-      : "") + "OBEKT TERMINAL — Autonomous Crypto Scalping, Live";
+    document.title = (D && D.equity && D.equity.day_pnl_pct !== undefined && D.equity.day_pnl_pct !== null
+      ? ((D.equity.day_pnl_pct >= 0 ? "+" : "") + D.equity.day_pnl_pct.toFixed(2) + "% · ")
+      : "") + "OBEKT TERMINAL — Autonomous Crypto Trading, Live";
   }
 
   function renderAll(D) {
@@ -964,6 +1161,7 @@
     renderTop(D); renderMarquee(D); renderHero(D); renderDesk(D); renderPerf(D);
     renderJev(D); renderGates(D); renderEquity(D); renderFunnel(D); renderExits(D);
     renderHours(D); renderScatter(D); renderInst(D); renderUniverse(D); renderPositions(D);
+    renderPerp(D);
     renderNews(D); renderSent(D); renderMacro(D); renderHist(D);
     renderTrades(D); renderDaily(D); renderArch(D); renderStack(D); renderOptim(D);
     renderCostLive(D); renderTape(D); renderSession(D);

@@ -26,6 +26,7 @@
 <header id="topbar">
   <div class="logo">▚ OBEKT<span>TERMINAL</span></div>
   <div class="topmeta" id="engine-meta">ENGINE ———</div>
+  <div class="topmeta" id="pos-badge">FLAT</div>
   <div class="topmeta live"><span class="dot"></span>LIVE TELEMETRY</div>
   <div class="topmeta" id="cycle-countdown">NEXT CYCLE ——:——</div>
   <div class="topmeta" id="clock">--:--:-- UTC</div>
@@ -43,6 +44,16 @@
     <div class="body" id="session-body">—</div>
   </section>
 
+  <section class="panel wide" id="p-pos">
+    <h2>OPEN POSITIONS — SPOT (LONG-ONLY, EUR) <em>live uPnL · 5m candle track · server-side protection</em></h2>
+    <div class="body" id="pos-body">—</div>
+  </section>
+
+  <section class="panel wide" id="p-perp">
+    <h2>X-PERPS — TWO-WAY BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 1x isolated · long &amp; short</em></h2>
+    <div class="body" id="perp-body">—</div>
+  </section>
+
   <section class="panel wide" id="p-desk">
     <h2>DESK NOTE <em id="desk-model"></em></h2>
     <div class="body"><pre id="desk-note">AWAITING LLM DESK COMMENTARY…</pre>
@@ -55,7 +66,7 @@
   </section>
 
   <section class="panel" id="p-jev">
-    <h2>JEV SYSTEM-ONE — LATEST CALL</h2>
+    <h2>JEV SYSTEM-ONE — SPOT CALL <em>long-only EUR book · shorts shown in the X-Perps two-way panel below</em></h2>
     <div class="body" id="jev-body">—</div>
   </section>
 
@@ -90,13 +101,8 @@
   </section>
 
   <section class="panel wide" id="p-universe">
-    <h2>UNIVERSE SCAN — EUR SPOT</h2>
+    <h2>UNIVERSE SCAN — BOTH BOOKS <em>spot engine scans EUR pairs · X-Perp engine scans USD contracts — two disjoint universes</em></h2>
     <div class="body" id="universe-body">—</div>
-  </section>
-
-  <section class="panel wide" id="p-pos">
-    <h2>OPEN POSITIONS <em>live uPnL · 5m candle track · server-side protection</em></h2>
-    <div class="body" id="pos-body">—</div>
   </section>
 
   <section class="panel" id="p-news">

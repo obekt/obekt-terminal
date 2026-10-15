@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 """OKX EEA spot crypto scalping pilot — Jev (System One) decides direction, code acts.
 
+v3.10 (10-15, user-approved levers A+B after the 128-trade replay):
+  - Replay verdict: net -21 EUR on gross +3.78 — fees (-24.85) eat everything;
+    no entry-filter fix held out-of-sample (conf>=0.60 flipped sign between
+    halves). The two durable findings: CT-EUR carries the edge (+4.47, 64% WR
+    at conf>=0.60) and NEAR-EUR bleeds (-6.09, 27% WR; 15% WR even at
+    conf>=0.60).
+  - LEVER B: UNIVERSE_EXCLUDE = {NEAR-EUR} — banned from select_universe()
+    (the only filter positive in BOTH out-of-sample halves).
+  - LEVER A (safe subset): unhurried rotation exits (time-stop/stale-exit)
+    now sell post_only as MAKER (0.1% vs 0.2% taker), 45s wait, market
+    fallback for the remainder; close events log exit_type. Urgent exits
+    (stop/trail/take-profit) stay MARKET — momentum risk outweighs 0.1%.
+    NOTE: OCO TP legs CANNOT be maker (trigger fires at/through the level;
+    any limit placed then crosses the book). The skill's old "maker TP"
+    idea is dead — recorded so nobody re-proposes it.
+
 v3.1 (09-30): dynamic universe + cost-aware brackets + social sentiment feed.
   - v3 traded 0 times in 24h: its hardcoded 4-pair list + 0.12% spread gate
     excluded every pair that actually moves on EUR books (scan of all 273 EUR
@@ -55,7 +71,7 @@ import json, os, sys, time, base64, hmac, hashlib, datetime, urllib.request, url
 # (generate.py) parses this constant from the engine source, so the displayed
 # version can never drift from the running engine again. Bump on every behavior
 # change and note it in the module docstring + skill.
-ENGINE_VERSION = "v3.9"
+ENGINE_VERSION = "v3.10"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "okx_jev_log.jsonl")
@@ -128,7 +144,14 @@ MIN_TOP5_DEPTH_EUR = 1_500  # top-5 bid levels must hold >= this (CT-EUR lesson
                             # off, then stopped at -4.4%). vol24h does NOT imply
                             # resting depth on thin EUR listings.
 ENTRY_DEPTH_MULT = 3.0      # at entry time: top-5 bid depth >= 3x stake
-FALLBACK_PAIRS = ["NEAR-EUR", "ZEC-EUR", "SUI-EUR", "LINK-EUR"]  # scan failure only
+# v3.10 (10-15, user-approved lever B): replay of 104 maker-era trades showed
+# NEAR-EUR is a persistent laggard (n=26, 27% WR, -6.09 EUR; still -4.67 even
+# at conf>=0.60 — its "high confidence" picks were the WORST band, 15% WR).
+# Dropping NEAR was the only filter positive in BOTH out-of-sample halves
+# (+5.55 first half / +0.30 second half at conf>=0.60). CT-EUR is the edge
+# source (+4.47, 64% WR at conf>=0.60) — keep it.
+UNIVERSE_EXCLUDE = {"NEAR-EUR"}
+FALLBACK_PAIRS = ["CT-EUR", "ZEC-EUR", "SUI-EUR", "LINK-EUR"]  # scan failure only
 
 # ---------------- COST-AWARE BRACKET (v3.1) ----------------
 # The question is not "is the spread tight?" but "is there edge left after cost?".
@@ -188,12 +211,27 @@ CHARS_PER_TOKEN = 1.65      # worst-case measured (est_tokens uses this, so it
 MAX_STATE_CHARS = 5400      # trim ceiling: keeps real input_tokens < 3400
 MAX_JEV_INPUT_TOKENS = 3400 # alarm threshold on Jev's reported input_tokens
 
-STABLES = ["USDC", "USDT"]   # swept to EUR every cycle (all-funds directive)
+# v3.10 X-Perps (10-15): USDC is now DERIVATIVES COLLATERAL for X-Perp shorts,
+# NOT sweep-to-EUR fuel. It was removed from STABLES so sweep_stables() stops
+# liquidating it every cycle (that would have wiped the perp margin on the first
+# cycle after the acctLv=2 unlock). USDT stays swept — we never intend to hold it
+# and it's compliance-walled (51155) anyway. A dedicated PERP_COLLATERAL_CCY
+# reserve is managed by the (new) X-Perp adapter, separate from spot EUR stake.
+STABLES = ["USDT"]           # swept to EUR every cycle (USDC reserved for perp collateral)
+PERP_COLLATERAL_CCY = "USDC" # held in Trading account as X-Perp margin; never swept
 MAX_OPEN = 1              # v3.9 user directive 10-14: bigger stakes - full bankroll per trade (slots were never the throughput bottleneck; gates were)
 MAX_ENTRIES_PER_CYCLE = 1 # one quality entry per cycle max
 TIME_STOP_MIN = 30        # close if losing after this
 STALE_EXIT_MIN = 60       # v3.9: 90->60 close flat-or-worse (faster rotation, 1 slot)
 FILL_WAIT_S = 25          # post_only entry patience before chase/cancel
+MAKER_EXIT_WAIT_S = 45    # v3.10 lever A (safe subset): post_only patience for
+                          # UNHURRIED exits (time-stop / stale-exit) before the
+                          # market fallback. Trail/stop/take-profit exits stay
+                          # MARKET: momentum is against us there and a missed
+                          # fill costs more than the 0.1% fee saved. NOTE: OCO
+                          # TP legs can NOT be maker — the trigger only fires
+                          # when price is already at/through the level, so any
+                          # limit placed then crosses the book (taker anyway).
 CHASE_MAX_PCT = 0.15      # IOC-take fallback only if ask within this % of bid
 COOLDOWN_MIN = 20         # v3.9: 30->20 per-pair cooldown after a LOSING exit
 WIN_COOLDOWN_MIN = 10     # v3.9: 15->10 per-pair cooldown after a PROFITABLE exit (v3.5,
@@ -381,6 +419,8 @@ def select_universe(force=False):
             continue
         if inst.split("-")[0] in STABLES:
             continue          # USDC/USDT-EUR are sweep rails, not trades
+        if inst in UNIVERSE_EXCLUDE:
+            continue          # v3.10 lever B: NEAR-EUR is a proven persistent laggard
         try:
             last = float(t["last"]); open24 = float(t["open24h"])
             hi = float(t["high24h"]); lo = float(t["low24h"])
@@ -752,6 +792,71 @@ def _rearm_oco(inst, sz_hint, px, bk, live_algos, m, meta):
     except Exception as e:
         logrec({"event": "rearm_oco_err", "inst": inst, "err": str(e)[:200]})
 
+def cancel_pending_orders(inst):
+    """Cancel resting plain (non-algo) SELL orders for inst. Crash-recovery:
+    if a previous cycle died mid maker-exit wait, its post_only order would
+    still freeze the base balance and wedge every later exit path."""
+    try:
+        pend = api("GET", f"/api/v5/trade/orders-pending?instId={inst}")
+        for od in pend or []:
+            if od.get("side") == "sell" and od.get("ordId"):
+                cancel_order(inst, od["ordId"])
+    except Exception as e:
+        logrec({"event": "cancel_pending_err", "inst": inst, "err": str(e)[:120]})
+
+def place_maker_exit(inst, sz, wait_s):
+    """v3.10 lever A: post_only SELL at the ask for unhurried rotation exits
+    (time-stop / stale-exit) — maker 0.1% instead of taker 0.2%. If unfilled
+    after wait_s, cancel and market-sell the remainder (the position MUST
+    exit; these legs are flat/losing by definition, so a 45s wait risks
+    ~nothing extra). Partial fills: market-sell only the remainder.
+    Returns (order_detail_with_blended_fee, exit_type)."""
+    cancel_pending_orders(inst)
+    ins = instrument(inst)
+    try:
+        ask = float(ticker(inst)["askPx"] or 0)
+    except Exception:
+        ask = 0
+    if ask <= 0:
+        o = place_market(inst, "sell", sz)
+        time.sleep(1)
+        return order_detail(inst, o["ordId"]), "taker_fallback"
+    body = {"instId": inst, "tdMode": "cash", "side": "sell", "ordType": "post_only",
+            "sz": str(sz), "px": str(round_step(ask, ins["tickSz"]))}
+    d = api("POST", "/api/v5/trade/order", body)
+    ord_id = d[0].get("ordId")
+    t0 = time.time()
+    od = None
+    while time.time() - t0 < wait_s:
+        od = order_detail(inst, ord_id)
+        if od["state"] in ("filled", "canceled", "cancelled"):
+            break
+        time.sleep(3)
+    od = od or order_detail(inst, ord_id)
+    acc = float(od.get("accFillSz") or 0)
+    if od["state"] == "filled":
+        return od, "maker"
+    if od["state"] in ("live", "partially_filled"):
+        cancel_order(inst, ord_id)
+        time.sleep(1)
+        od = order_detail(inst, ord_id)
+        acc = float(od.get("accFillSz") or 0)
+    rem = round_step(sz - acc, ins["lotSz"])
+    if rem >= float(ins["minSz"]):
+        o2 = place_market(inst, "sell", rem)
+        time.sleep(1)
+        od2 = order_detail(inst, o2["ordId"])
+        try:  # blend fee + avgPx across both legs for the close log
+            od2["fee"] = str(float(od.get("fee") or 0) + float(od2.get("fee") or 0))
+            q1, q2 = acc, float(od2.get("accFillSz") or 0)
+            if q1 + q2 > 0:
+                od2["avgPx"] = str((float(od.get("avgPx") or 0) * q1
+                                    + float(od2.get("avgPx") or 0) * q2) / (q1 + q2))
+        except Exception:
+            pass
+        return od2, ("maker_partial" if acc > 0 else "taker_fallback")
+    return od, "maker"
+
 def manage():
     """Deterministic exits: stop-loss, trailing take-profit, time-stop. Runs every
     cycle. Server-side OCO algos are the first line for the HARD stop; the trailing
@@ -902,20 +1007,28 @@ def manage():
                     "note": "deferred to prune loop for server-side exit detection"})
             continue
         try:
-            o = place_market(inst, "sell", sz)
-            fee = None
-            try:
+            # v3.10 lever A (user-approved 10-15): UNHURRIED rotation exits
+            # (time-stop / stale-exit) sell post_only as maker (0.1%) with a
+            # market fallback after MAKER_EXIT_WAIT_S. These positions are flat
+            # or mildly losing BY DEFINITION — waiting 45s risks nothing extra.
+            # Urgent exits (stop-loss / trail / take-profit) stay MARKET:
+            # momentum is against us and a missed fill costs more than 0.1%.
+            urgent = why.startswith(("stop-loss", "trail-exit", "take-profit"))
+            if urgent:
+                o = place_market(inst, "sell", sz)
                 time.sleep(1)
                 od = order_detail(inst, o["ordId"])
-                fee = od.get("fee")
-                fill_px = od.get("avgPx")
-                if fill_px:
-                    upc = (float(fill_px) - entry) / entry * 100
-            except Exception:
-                pass
-            actions.append({"closed": inst, "reason": why, "ordId": o.get("ordId"), "upc": round(upc, 2)})
+                exit_type = "taker"
+            else:
+                od, exit_type = place_maker_exit(inst, sz, MAKER_EXIT_WAIT_S)
+            fee = od.get("fee")
+            fill_px = od.get("avgPx")
+            if fill_px:
+                upc = (float(fill_px) - entry) / entry * 100
+            actions.append({"closed": inst, "reason": why, "ordId": od.get("ordId"), "upc": round(upc, 2)})
             logrec({"event": "close", "inst": inst, "reason": why, "upc": round(upc, 2),
-                    "age_min": round(age_min or 0, 1), "ordId": o.get("ordId"), "realized_fee": fee})
+                    "age_min": round(age_min or 0, 1), "ordId": od.get("ordId"),
+                    "exit_type": exit_type, "realized_fee": fee})
             mark_exit(inst, upc)
             meta.pop(inst, None)
         except Exception as e:

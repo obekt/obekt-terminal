@@ -52,28 +52,54 @@ CONTACT_LINE = os.environ.get(
     "TERMINAL_CONTACT_LINE",
     "OBEKT AUTONOMOUS TRADING PLATFORM  //  BUILT BY OBEKT AI WORKS -> https://obekt.com")
 
-def _engine_version():
-    """Parse ENGINE_VERSION from the engine source (single source of truth).
-    The engine dir is mounted read-only at BASE; never hardcode the version
-    here again -- it drifts (v3.5 was displayed while v3.6 traded)."""
+def _engine_bars():
+    """Parse the live gate thresholds from okx_jev.py so the deck's DECISION GATES
+    panel can never drift from what the engine actually enforces. Falls back to
+    the current production values if parsing fails."""
+    defaults = (0.30, 0.50, 0.50, 0.45)  # MARGIN_BAR, CONF_BAR, CONF_FLOOR, NOUL_BAR
     try:
-        src = open(os.path.join(BASE, "okx_jev.py")).read(16384)
-        m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
-        if m:
-            return m.group(1)
+        src = open(os.path.join(BASE, "okx_jev.py")).read(32768)
+        def _num(name):
+            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+            return float(m.group(1)) if m else None
+        vals = [_num(n) for n in ("MARGIN_BAR", "CONF_BAR", "CONF_FLOOR", "NOUL_BAR")]
+        if all(v is not None for v in vals):
+            return tuple(vals)
     except Exception:
         pass
-    return "unknown"
+    return defaults
 
+
+def _engine_version():
+    """Combined version across both engines (spot okx_jev.py + perp okx_perp.py).
+    Read from source = single source of truth; never hardcode (it drifts)."""
+    def _ver(fname):
+        try:
+            src = open(os.path.join(BASE, fname)).read(16384)
+            m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
+            return m.group(1) if m else None
+        except Exception:
+            return None
+    spot = _ver("okx_jev.py")
+    perp = _ver("okx_perp.py")
+    if spot and perp:
+        return "SPOT %s + PERP %s" % (spot, perp)
+    return spot or perp or "unknown"
+
+# Launch bankroll (09-28) — the anchor for the all-time realized return %.
+# Realized trading P&L is expressed against THIS, not against a moving equity
+# base, so the number stays honest as capital is reallocated (e.g. EUR->USDC
+# for the perp book is a transfer, not a loss).
+LAUNCH_EUR = 147.77
 
 ENGINE = {
     "version": _engine_version(),
-    "venue": "OKX EUROPE (EEA) SPOT",
+    "venue": "OKX EUROPE (EEA) · SPOT + X-PERPS",
     "cycle_s": 300,
-    "quote": "EUR",
+    "quote": "EUR / USDC",
     "decision_model": "jev-latest (TypeSafe System One)",
     "desk_model": LLM_MODEL,
-    "mode": "LIVE CAPITAL — FULLY AUTONOMOUS",
+    "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
 }
 
 
@@ -151,6 +177,7 @@ def build_round_trips(events):
                 "exit_px": e.get("fill_px"),
                 "stake_eur": round(stake, 2),
                 "upc": upc,
+                "net_pct": round(100 * (gross - fees) / stake, 3) if stake else None,
                 "gross_eur": round(gross, 2),
                 "fees_eur": round(fees, 3),
                 "net_eur": round(gross - fees, 2),
@@ -186,12 +213,18 @@ def build_stats(trips, events):
     best = max(trips, key=lambda t: t["net_eur"], default=None)
     worst = min(trips, key=lambda t: t["net_eur"], default=None)
 
-    # cumulative PnL series (chronological) for sparkline
+    # cumulative PnL series (chronological) for sparkline.
+    # v4: express as PERCENT, not fiat. HONEST BASIS = running realized net as a
+    # % of LAUNCH capital (LAUNCH_EUR), NOT sum-of-per-trade-%-of-own-stake
+    # (that conflated €18 and €120 stakes into a meaningless -32%). This is the
+    # true account return curve and is venue-agnostic (EUR + USDC both count as
+    # deployed capital against the one launch figure).
     chrono = sorted([t for t in trips if t.get("close_ts")], key=lambda t: t["close_ts"])
-    cum, run = [], 0.0
+    cum, cum_pct, run = [], [], 0.0
     for t in chrono:
         run = round(run + t["net_eur"], 2)
         cum.append(run)
+        cum_pct.append(round(100 * run / LAUNCH_EUR, 3) if LAUNCH_EUR else 0.0)
 
     # PnL per instrument
     per_inst = {}
@@ -268,6 +301,10 @@ def build_stats(trips, events):
         "losses": len(losses),
         "win_rate_pct": round(100 * len(wins) / len(trips), 1) if trips else None,
         "net_all_eur": round(sum(t["net_eur"] for t in trips), 2),
+        # v4: cumulative realized P&L as a PERCENT of LAUNCH capital (honest
+        # account return; the old sum-of-per-trade-stake-% was wrong — see the
+        # cum_pnl_pct comment above).
+        "net_all_pct": round(100 * sum(t["net_eur"] for t in trips) / LAUNCH_EUR, 2) if LAUNCH_EUR else None,
         "fees_all_eur": round(sum(t["fees_eur"] for t in trips), 2),
         "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
         "avg_win_eur": round(gross_win / len(wins), 2) if wins else None,
@@ -278,6 +315,7 @@ def build_stats(trips, events):
         "worst_trade": _slim(worst),
         "days": days,
         "cum_pnl": cum,
+        "cum_pnl_pct": cum_pct,
         "per_inst": per_inst,
         "hold_buckets": hold,
         "by_hour": by_hour,
@@ -807,13 +845,19 @@ def build_jev_latest(events):
                 if inst.split("-")[0].lower() == m.group(1):
                     chosen_inst = inst
                     chosen_noul = (ans.get("p_up_%s" % m.group(1)) or {}).get("noul")
-    # engine bar: (margin>=0.25 or conf>=0.5) and noul>=0.45
+    # engine bars: PARSED FROM ENGINE SOURCE (single source of truth — these
+    # were hardcoded 0.25/0.45 and drifted from the engine, which actually runs
+    # MARGIN_BAR=0.30 + a CONJUNCTIVE CONF_FLOOR since v3.8:
+    #   edge_ok = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
+    #   fire    = edge_ok and noul >= NOUL_BAR
+    MBAR, CBAR, CFLOOR, NBAR = _engine_bars()
     conf = ba.get("confidence")
     if chosen_inst:
-        bar_margin = (margin is not None and margin >= 0.25)
-        bar_conf = (conf is not None and conf >= 0.50)
-        bar_noul = (chosen_noul is not None and chosen_noul >= 0.45)
-        fired = bar_margin or bar_conf
+        bar_margin = (margin is not None and margin >= MBAR)
+        bar_conf = (conf is not None and conf >= CBAR)
+        conf_floor_ok = (conf is not None and conf >= CFLOOR)
+        bar_noul = (chosen_noul is not None and chosen_noul >= NBAR)
+        fired = (bar_margin or bar_conf) and conf_floor_ok
         verdict_ok = bool(fired and bar_noul)
     else:
         bar_margin = bar_conf = bar_noul = None
@@ -849,7 +893,8 @@ def build_jev_latest(events):
         "noul": chosen_noul,
         "probabilities": probs,
         "pairs": rows,
-        "criteria": {"margin_bar": 0.25, "conf_bar": 0.50, "noul_bar": 0.45,
+        "criteria": {"margin_bar": MBAR, "conf_bar": CBAR, "conf_floor": CFLOOR,
+                     "noul_bar": NBAR,
                      "margin_ok": bar_margin, "conf_ok": bar_conf, "noul_ok": bar_noul,
                      "fire": verdict_ok},
         "action": action,
@@ -969,21 +1014,42 @@ def build_positions(positions_raw, px):
     return out
 
 
-def build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions=None):
+def build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions=None, perp=None):
     """LLM desk note via halogen-qwen3.8-flash-next. Cached + rate-limited."""
     cache = _load_json(COMMENTARY_CACHE, {}) or {}
     recent = trips[-6:]
+    perp = perp or {}
+    perp_positions = perp.get("positions") or []
+    perp_stats = perp.get("stats") or {}
+    perp_open = [{
+        "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),
+        "entry": p.get("entry_ref"), "notional_usd": p.get("notional_usd"),
+        "upc_pct": p.get("upc"),
+    } for p in perp_positions]
     payload_txt = json.dumps({
         "trading_state": {
             "mode": ENGINE["mode"],
             "live_capital": True,
             "halted": os.path.exists(os.path.join(BASE, "STOP")),
-            "open_positions": len(positions or []),
+            "spot_open_positions": len(positions or []),
+            "perp_open_positions": len(perp_positions),
+            "open_positions": len(positions or []) + len(perp_positions),
+            "perp_halted": perp.get("halted"),
             "day_trades": equity.get("day_trades"),
         },
         "equity": equity,
         "stats": {k: stats[k] for k in ("trades_all", "win_rate_pct", "net_all_eur",
                                         "profit_factor", "fees_all_eur")},
+        "perp_book": {
+            "open_positions": perp_open,
+            "usdc_collateral": perp.get("usdc_equity"),
+            "last_call": perp.get("last_jev") and {
+                "ts": perp["last_jev"].get("ts"), "choice": perp["last_jev"].get("choice"),
+                "chosen_side": perp["last_jev"].get("chosen_side"),
+                "conf": perp["last_jev"].get("conf")},
+            "closed_trades": perp_stats.get("trades_all"),
+            "realized_pct": perp_stats.get("net_all_pct"),
+        },
         "latest_decision": jev_latest and {
             "ts": jev_latest["ts"], "choice": jev_latest["choice"],
             "inst": jev_latest["chosen_inst"], "conf": jev_latest["confidence"],
@@ -1012,12 +1078,16 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             return cache.get("out")
     prompt = (
         "You are the desk commentator for OBEKT TERMINAL, the Bloomberg-style observation dashboard of a "
-        "LIVE autonomous crypto scalping system trading REAL capital (OKX EEA spot, EUR pairs, 5-min cycles). "
-        "The dashboard displays telemetry read-only, but the ENGINE behind it places real orders: it is "
+        "LIVE autonomous crypto trading system trading REAL capital on OKX Europe (EEA), 5-min cycles. "
+        "It runs TWO books: (1) SPOT — EUR pairs, long-only; (2) X-PERPS — USD-settled MiFID expiry "
+        "perps, two-way (LONG and SHORT), USDC collateral, 1x isolated. "
+        "The dashboard displays telemetry read-only, but the ENGINES behind it place real orders: they are "
         "NEVER in demo, paper, showcase or read-only trading mode. The trading_state block in the snapshot "
         "is authoritative — halted=true means the kill switch is on; otherwise it is trading live. "
+        "open_positions counts BOTH books (spot_open_positions + perp_open_positions); the perp_book block "
+        "lists each open X-Perp position with its side (long/short). "
         "Few or zero trades in a day is normal gate selectivity, not a mode change. "
-        "The engine: deterministic Python gates scan ~270 EUR pairs, momentum/depth gates filter them, "
+        "Each engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
         "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text); "
         "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
         "LIVE SYSTEM SNAPSHOT (UTC):\n" + payload_txt + "\n\n"
@@ -1056,6 +1126,124 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "model": LLM_MODEL, "generated": _now().isoformat()}
 
 
+def build_perp():
+    """v4: two-way X-Perp book (separate engine, USDC collateral, LONG+SHORT).
+    Reads perp_log.jsonl / perp_positions.json / perp_universe.json from BASE.
+    Returns a compact block for a dedicated deck panel; None-safe if the perp
+    engine has never run."""
+    plog_path = os.path.join(BASE, "perp_log.jsonl")
+    events = []
+    try:
+        with open(plog_path, errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+    except FileNotFoundError:
+        return None
+    if not events:
+        return None
+
+    # round trips: perp_open -> perp_close / perp_close_detected
+    open_by = {}
+    trips = []
+    for e in events:
+        ev = e.get("event")
+        inst = e.get("inst")
+        if ev == "perp_open":
+            open_by.setdefault(inst, []).append(e)
+        elif ev in ("perp_close", "perp_close_detected"):
+            stack = open_by.get(inst)
+            o = stack.pop() if stack else {}
+            upc = e.get("upc")
+            if upc is None:
+                continue
+            notional = float((o or {}).get("notional_usd") or 0)
+            fee = abs(float(e.get("realized_fee") or 0))
+            entry_fee = abs(float((o or {}).get("realized_fee") or 0))
+            net_usd = notional * upc / 100.0 - fee - entry_fee
+            trips.append({
+                "inst": inst, "side": (o or {}).get("side"),
+                "open_ts": (o or {}).get("ts"), "close_ts": e.get("ts"),
+                "upc": upc, "notional_usd": round(notional, 2),
+                "net_usd": round(net_usd, 2),
+                "net_pct": round(100 * net_usd / notional, 3) if notional else None,
+                "reason": e.get("reason") or ("server OCO" if ev == "perp_close_detected" else "exit"),
+                "exit_kind": "server-oco" if ev == "perp_close_detected" else "managed",
+            })
+    longs = [t for t in trips if t.get("side") == "long"]
+    shorts = [t for t in trips if t.get("side") == "short"]
+    wins = [t for t in trips if (t.get("net_usd") or 0) > 0]
+    cum, run = [], 0.0
+    for t in sorted([x for x in trips if x.get("close_ts")], key=lambda x: x["close_ts"]):
+        run = round(run + (t.get("net_pct") or 0), 3)
+        cum.append(run)
+
+    # live collateral + open positions from the perp engine's own files
+    pmeta = _load_json(os.path.join(BASE, "perp_positions.json"), {}) or {}
+    puniv = _load_json(os.path.join(BASE, "perp_universe.json"), {}) or {}
+    prank = _load_json(os.path.join(BASE, "perp_risk_state.json"), {}) or {}
+    psnap = _load_json(os.path.join(BASE, "perp_status.json"), {}) or {}
+    positions = []
+    # live rows from perp_status.json carry last/upc/liq_px (engine has creds;
+    # the container does not) — prefer them, fall back to raw meta.
+    live_by = {}
+    for p in (psnap.get("positions") or []):
+        if isinstance(p, dict) and p.get("inst"):
+            live_by[p["inst"]] = p
+    for inst, m in pmeta.items():
+        if not isinstance(m, dict):
+            continue
+        lv = live_by.get(inst, {})
+        positions.append({"inst": inst, "side": m.get("side"),
+                          "entry_ref": m.get("entry_ref"), "contracts": m.get("contracts"),
+                          "notional_usd": m.get("notional_usd") or lv.get("notional_usd"),
+                          "bracket": m.get("bracket"),
+                          "hwm_pct": m.get("hwm_pct"), "algo_ok": m.get("algo_ok"),
+                          "opened_ts": m.get("opened_ts"), "jev_conf": m.get("jev_conf"),
+                          "last": lv.get("last"), "upc": lv.get("upc"),
+                          "liq_px": lv.get("liq_px"), "upl": lv.get("upl"),
+                          "lever": lv.get("lever")})
+    last_jev = None
+    for e in reversed(events):
+        if e.get("event") == "perp_jev":
+            last_jev = {"ts": e.get("ts"), "choice": e.get("choice"), "conf": e.get("conf"),
+                        "margin": e.get("margin"), "noul": e.get("noul"),
+                        "chosen_inst": e.get("chosen_inst"), "chosen_side": e.get("chosen_side"),
+                        "probabilities": e.get("probabilities") or {},
+                        "pairs": e.get("pairs") or [],
+                        "collateral_usdc": e.get("collateral_usdc"),
+                        "budget_usd": e.get("budget_usd"),
+                        "tokens": {"in": e.get("input_tokens"), "out": e.get("output_tokens")}}
+            break
+    return {
+        "engine": "v4.0-perp", "venue": "OKX EUROPE X-PERPS (MiFID)",
+        "halted": os.path.exists(os.path.join(BASE, "STOP")) or os.path.exists(os.path.join(BASE, "STOP_PERP")),
+        "breaked": prank.get("breaked"), "day": prank.get("day"),
+        "usdc_equity": psnap.get("usdc_equity"),
+        "status_ts": psnap.get("ts"),
+        "universe": puniv.get("pairs", []),
+        "universe_selected": puniv.get("selected", []),
+        "universe_scanned": puniv.get("scanned"),
+        "universe_scanned_iso": (datetime.fromtimestamp(puniv.get("scanned"), timezone.utc).isoformat()
+                                  if puniv.get("scanned") else None),
+        "positions": positions,
+        "last_jev": last_jev,
+        "trades": trips[-20:][::-1],
+        "stats": {
+            "trades_all": len(trips),
+            "win_rate_pct": round(100 * len(wins) / len(trips), 1) if trips else None,
+            "longs": len(longs), "shorts": len(shorts),
+            "net_all_pct": round(sum((t.get("net_pct") or 0) for t in trips), 2),
+            "net_all_usd": round(sum((t.get("net_usd") or 0) for t in trips), 2),
+        },
+        "cum_pnl_pct": cum,
+    }
+
+
 def build():
     t0 = time.time()
     events = read_log()
@@ -1092,6 +1280,8 @@ def build():
     tickers, px_map = fetch_tickers(extra_insts=positions_raw_keys)
     positions = build_positions(positions_raw, px_map)
 
+    perp = build_perp()
+
     news = catalyst.get("catalysts", [])
     macro = {}
     if jev_latest:
@@ -1111,7 +1301,7 @@ def build():
         "funding_bps": jev_latest.get("funding_bps") if jev_latest else None,
     }
 
-    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions)
+    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions, perp)
 
     data = {
         "generated": _now().isoformat(),
@@ -1124,6 +1314,7 @@ def build():
         "funnel": funnel,
         "scatter": scatter,
         "positions": positions,
+        "perp": perp,
         "jev_latest": jev_latest,
         "jev_history": jev_hist,
         "universe": universe,
