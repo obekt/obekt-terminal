@@ -44,13 +44,8 @@
     <div class="body" id="session-body">—</div>
   </section>
 
-  <section class="panel wide" id="p-pos">
-    <h2>OPEN POSITIONS — SPOT (LONG-ONLY, EUR) <em>live uPnL · 5m candle track · server-side protection</em></h2>
-    <div class="body" id="pos-body">—</div>
-  </section>
-
   <section class="panel wide" id="p-perp">
-    <h2>X-PERPS — TWO-WAY BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 1x isolated · long &amp; short</em></h2>
+    <h2>X-PERPS — THE LIVE BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 1x isolated · long &amp; short</em></h2>
     <div class="body" id="perp-body">—</div>
   </section>
 
@@ -60,13 +55,21 @@
     <div id="decision-line" class="decision-line"></div></div>
   </section>
 
-  <section class="panel" id="p-perf">
-    <h2>PERFORMANCE — LIVE CAPITAL (EUR)</h2>
+  <!-- the spot book was RETIRED 2026-10-15 (capital consolidated into X-Perps at
+       operator direction). Its panels remain as an honest historical record:
+       the engine code, the 132-trade ledger and the replay are all real. -->
+  <section class="panel wide retired" id="p-pos">
+    <h2>OPEN POSITIONS — SPOT <em id="spot-retired-tag">RETIRED 2026-10-15 · long-only EUR book · no longer trading</em></h2>
+    <div class="body" id="pos-body">—</div>
+  </section>
+
+  <section class="panel retired" id="p-perf">
+    <h2>PERFORMANCE — SPOT RECORD <em id="spot-perf-tag">RETIRED · EUR · final ledger</em></h2>
     <div class="body" id="perf-body">—</div>
   </section>
 
-  <section class="panel" id="p-jev">
-    <h2>JEV SYSTEM-ONE — SPOT CALL <em>long-only EUR book · shorts shown in the X-Perps two-way panel below</em></h2>
+  <section class="panel retired" id="p-jev">
+    <h2>JEV SYSTEM-ONE — SPOT CALL <em id="spot-jev-tag">RETIRED · historical decisions from the long-only EUR book</em></h2>
     <div class="body" id="jev-body">—</div>
   </section>
 
@@ -101,7 +104,7 @@
   </section>
 
   <section class="panel wide" id="p-universe">
-    <h2>UNIVERSE SCAN — BOTH BOOKS <em>spot engine scans EUR pairs · X-Perp engine scans USD contracts — two disjoint universes</em></h2>
+    <h2>UNIVERSE SCAN — LIVE X-PERPS + RETIRED SPOT <em>the X-Perp engine scans USD contracts (live) · the retired spot engine's EUR-pair scan is shown for the record</em></h2>
     <div class="body" id="universe-body">—</div>
   </section>
 

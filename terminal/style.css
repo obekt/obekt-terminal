@@ -77,6 +77,12 @@ tr:hover{background:inherit}
 .pos{color:var(--green)}
 .neg{color:var(--red)}
 .dim{color:var(--gray)}
+/* Retired book (spot EUR, decommissioned 2026-10-15): visually de-emphasised so
+   the live X-Perp book reads as the system, while the spot record stays honest
+   and inspectable rather than being hidden. */
+.panel.retired{opacity:.72;border-color:#2a2519}
+.panel.retired h2{background:linear-gradient(90deg,#141210,#0a0908);color:var(--gray)}
+.panel.retired h2 em{color:#6a6154}
 .cy{color:var(--cyan)}
 .am{color:var(--amber)}
 

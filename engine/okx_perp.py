@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.3-perp"
+ENGINE_VERSION = "v4.4-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -713,7 +713,16 @@ def status():
         pass
     # snapshot for the observation terminal (container has no creds; reads this)
     try:
+        # Publish the WHOLE account, not just this book's collateral. Without the
+        # EUR float the deck had to read cash from the retired spot engine's last
+        # logged jev event, which froze at the pre-conversion 100.73 EUR and then
+        # got narrated as current account state. Truth beats convenience here.
+        _bal = J.balances()
+        _eur = float((_bal.get("EUR") or {}).get("avail") or 0)
+        _tot_usd = round(sum(float(v.get("eq_usd") or 0) for v in _bal.values()), 2)
         snap = {"engine": ENGINE_VERSION, "usdc_equity": out["usdc_equity"],
+                "eur_float": round(_eur, 4), "account_total_usd": _tot_usd,
+                "collateral_ccy": J.PERP_COLLATERAL_CCY,   # defined in okx_jev (imported as J), NOT here
                 "halted": out["halted"], "dry": DRY,
                 "n_positions": len(out["positions"]),
                 "algos_pending": out["algos_pending"], "ts": now_iso(),

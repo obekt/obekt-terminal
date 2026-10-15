@@ -1,9 +1,11 @@
 # `engine/` — the autonomous traders
 
-**Two books, two engines.** The strategy in code. Each is a one-shot process
-called by a scheduler (cron/systemd timer) every 5 minutes — no daemon needed.
-They are isolated by design: separate collateral, state files, kill-switches and
-daily breakers, so a bug in one book can't drain the other.
+**Two engines, one live book.** As of 2026-10-15 all capital sits in the
+two-way X-Perp book; the spot EUR engine is retired (timer disabled, source and
+ledger kept — the live engine imports its plumbing as a library). Each is a
+one-shot process called by a scheduler (cron/systemd timer) every 5 minutes — no
+daemon needed. They are isolated by design: separate collateral, state files,
+kill-switches and daily breakers.
 
 > ⚠️ **This trades real money on real exchanges.** Read [`../DISCLAIMER.md`](../DISCLAIMER.md).
 > Start in demo/paper if your venue offers it. Nothing here is advice.
@@ -12,8 +14,8 @@ daily breakers, so a bug in one book can't drain the other.
 
 | file | what it is |
 |---|---|
-| `okx_jev.py` | **SPOT book (long-only, EUR pairs).** The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1600 lines, stdlib only (no pip deps). |
-| `okx_perp.py` | **X-PERP book (two-way: LONG + SHORT, USD-settled MiFID expiry-perps).** Imports `okx_jev` for the signed API client, market data and the Jev client — it does not duplicate them. Own state (`perp_*.json`), USDC collateral, 1× isolated margin, liquidation-distance guard. Two-sided Jev: scores `p(long)` and `p(short)` per contract. ~700 lines. |
+| `okx_perp.py` | **LIVE book — X-PERPS (two-way: LONG + SHORT, USD-settled MiFID expiry-perps).** Imports `okx_jev` for the signed API client, market data and the Jev client — it does not duplicate them. Own state (`perp_*.json`), USDC collateral, 1× isolated margin, liquidation-distance guard. Two-sided Jev: scores `p(long)` and `p(short)` per contract. ~770 lines. |
+| `okx_jev.py` | **RETIRED book — SPOT (long-only, EUR pairs).** Kept for two reasons: it is the honest 132-trade record of the first strategy, and `okx_perp.py` imports it as a library (signed API, market data, Jev client, `balances()`). The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1600 lines, stdlib only (no pip deps). |
 | `news_feed.py` | Keyless RSS catalyst feed (Cointelegraph/CNBC/Yahoo Finance) → `catalyst.json`, 30-min freshness guard. Called by spot `cycle`. |
 | `social_feed.py` | Keyless sentiment: alternative.me Fear&Greed (+ streak), CoinGecko trending + per-coin community polls, vs-EUR market context → `social.json`, 15-min cache. Called by spot `cycle`. |
 

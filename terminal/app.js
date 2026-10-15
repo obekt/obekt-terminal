@@ -94,9 +94,18 @@
     });
     const eq = D.equity || {};
     const st = D.stats || {};
-    const head = '<b>EQ</b> ' + eur(eq.equity_eur) +
-      ' <span class="' + ((eq.day_pnl_eur || 0) >= 0 ? "up" : "dn") + '">' + sgn(eq.day_pnl_pct) +
-      '%</span> <span class="dim">ALL ' + sgn(st.net_all_pct) + '%</span>  <span class="dim">·</span>  ';
+    const P = D.perp || {}, ps = P.stats || {};
+    const spotRetired = /retired/i.test(String(((D.engine || {}).spot_book || {}).status || ""));
+    // With spot retired the ticker's EQ/% lead must be the LIVE book (perp USDC),
+    // not spot's frozen EUR equity — otherwise the marquee shows a number that
+    // stopped moving the day spot was switched off.
+    const head = spotRetired
+      ? '<b>EQ</b> $' + fmt(P.usdc_equity, 2) +
+        ' <span class="' + ((ps.day_pnl_pct || 0) >= 0 ? "up" : "dn") + '">' + sgn(ps.day_pnl_pct) +
+        '%</span> <span class="dim">ALL ' + sgn(ps.net_all_pct) + '%</span>  <span class="dim">·</span>  '
+      : '<b>EQ</b> ' + eur(eq.equity_eur) +
+        ' <span class="' + ((eq.day_pnl_eur || 0) >= 0 ? "up" : "dn") + '">' + sgn(eq.day_pnl_pct) +
+        '%</span> <span class="dim">ALL ' + sgn(st.net_all_pct) + '%</span>  <span class="dim">·</span>  ';
     const fg = (D.sentiment || {}).fear_greed;
     const tail = fg ? '  <span class="dim">·</span>  <b>F&amp;G</b> ' + fg.value + " " + esc(fg.label) : "";
     const line = head + parts.join('  <span class="dim">·</span>  ') + tail + "   ▚▚▚   ";
@@ -128,11 +137,16 @@
     const pnlCls = (e.day_pnl_eur || 0) >= 0 ? "g" : "r";
     const choice = (j.choice || "—").toUpperCase();
     const noTrade = j.choice === "no_trade" || !j.choice;
+    const sb = (D.engine || {}).spot_book || {};
+    const spotRetired = /retired/i.test(String(sb.status || ""));
+    const P = D.perp || {}, ps = P.stats || {};
     // OPEN POSITION cell — the single most important live fact, so it leads.
     const ob = openBook(D);
     let posV, posSub, posCls;
     if (!ob.length) {
-      posV = "FLAT"; posSub = "no open position · both engines in cash"; posCls = "w";
+      posV = "FLAT";
+      posSub = spotRetired ? "no open X-Perp position · capital in USDC" : "no open position · both engines in cash";
+      posCls = "w";
     } else {
       const r = ob[0];
       const arrow = r.side === "short" ? "▼ SHORT" : "▲ LONG";
@@ -140,12 +154,41 @@
       posSub = (r.upc === null || r.upc === undefined ? "" : sgn(r.upc) + "% · ") + r.book + " · " + r.note;
       posCls = r.side === "short" ? "r" : "g";
     }
+    // The LIVE book is X-Perps. Its all-time % is measured against capital put
+    // INTO that book (injections are capital, not P&L). The retired spot book's
+    // final record is shown alongside, clearly labelled, not blended in.
+    const allTimeV = spotRetired
+      ? sgn(ps.net_all_pct) + "%"
+      : sgn(s.net_all_pct) + "%";
+    const allTimeSub = spotRetired
+      ? ((ps.trades_all || 0) + " X-Perp trades · $" + fmt(ps.capital_usd, 2) + " in book")
+      : (s.trades_all + " trades · " + fmt(s.win_rate_pct, 1) + "% win");
+    // LATEST VOTE: with spot retired the live decision stream is the perp book's.
+    // Fall back to spot's jev_latest only when the perp book has never decided.
+    const pj = P.last_jev || {};
+    const liveJ = (spotRetired && pj.choice) ? pj : j;
+    const lvChoice = String(liveJ.choice || "—").toUpperCase();
+    const lvNoTrade = liveJ.choice === "no_trade" || !liveJ.choice;
+    const lvSide = String(liveJ.chosen_side || "").toLowerCase();
+    const lvArrow = lvSide === "short" ? "▼ " : (lvSide === "long" ? "▲ " : "");
+    const lvConf = liveJ.confidence !== undefined ? liveJ.confidence : liveJ.conf;
+    // TODAY: with spot retired, the live book's day P&L is the perp book's.
+    // (Spot's day_pnl_pct freezes at its final value once the engine stops.)
+    const todayPct = spotRetired && ps.day_pnl_pct !== undefined && ps.day_pnl_pct !== null
+      ? ps.day_pnl_pct : e.day_pnl_pct;
+    const todayTrades = spotRetired ? (ps.day_trades || 0) : (e.day_trades || 0);
+    const todayCls = (todayPct || 0) >= 0 ? "g" : "r";
     $("hero-body").innerHTML =
       cell("OPEN POSITION", posV, posSub, posCls, true) +
-      cell("EQUITY", eur(e.equity_eur), "spot EUR + $" + fmt((D.perp || {}).usdc_equity) + " perp USDC", "w", true) +
-      cell("TODAY", sgn(e.day_pnl_pct) + "%", (e.day_trades || 0) + " trades closed", pnlCls, true) +
-      cell("ALL-TIME", sgn(s.net_all_pct) + "%", s.trades_all + " trades · " + fmt(s.win_rate_pct, 1) + "% win", cls(s.net_all_pct)) +
-      cell("LATEST VOTE", noTrade ? "FLAT" : choice.replace("BUY_", "▲ ").replace("SHORT_", "▼ "), noTrade ? "model: standing aside" : "conf " + fmt(j.confidence), noTrade ? "w" : "g") +
+      cell(spotRetired ? "PERP EQUITY (LIVE)" : "EQUITY", "$" + fmt(P.usdc_equity, 2),
+        spotRetired ? "USDC collateral · 1x isolated" : "spot EUR + $" + fmt(P.usdc_equity) + " perp USDC",
+        "w", true) +
+      cell("TODAY", sgn(todayPct) + "%", todayTrades + " trades closed", todayCls, true) +
+      cell(spotRetired ? "ALL-TIME — X-PERPS" : "ALL-TIME", allTimeV, allTimeSub,
+        cls(spotRetired ? ps.net_all_pct : s.net_all_pct)) +
+      cell("LATEST VOTE", lvNoTrade ? "FLAT" : lvArrow + lvChoice.replace("BUY_", "").replace("SHORT_", "").replace("LONG_", ""),
+        lvNoTrade ? "model: standing aside" : "conf " + fmt(lvConf) + (spotRetired ? " · X-Perp" : ""),
+        lvNoTrade ? "w" : "g") +
       cell("CYCLES RUN", (f.cycles || 0).toLocaleString(), (f.jev_calls || 0) + " model calls · ~5m each", "") +
       cell("UPTIME", f.uptime_h ? Math.floor(f.uptime_h / 24) + "D " + Math.round(f.uptime_h % 24) + "H" : "—", "since " + (f.first_ts || "").slice(5, 10), "w") +
       cell("MODEL COST", "$" + fmt(f.usd_today, 4), "today · avg " + (f.avg_input_tok || "?") + " tok/call", "g");
@@ -233,35 +276,61 @@
       '<span class="gname">' + esc(name) + "</span><span class='gval'>" + esc(detail) + "</span></div>";
   }
   function renderGates(D) {
-    const j = D.jev_latest;
+    // The DECISION GATES panel must show the LIVE book's call scored against the
+    // LIVE book's own thresholds. With spot retired (2026-10-15) that is the perp
+    // book: its jev event is flat (conf/margin/noul at top level) and its
+    // criteria were computed against okx_perp.py's bars — not spot's, which run a
+    // different CONF_FLOOR (0.50 vs 0.40). Falling back to spot only if the perp
+    // engine has never logged a call.
+    const spotRetired = /retired/i.test(String(((D.engine || {}).spot_book || {}).status || ""));
+    const pj = ((D.perp || {}).last_jev) || {};
+    const usePerp = spotRetired && pj && pj.criteria;
+    const j = usePerp ? pj : D.jev_latest;
     const r = D.risk || {};
     const out = [];
     if (j && j.criteria) {
       const c = j.criteria;
       const na = !j.chosen_inst;
-      out.push(gateRow("MARGIN p(buy)−p(no_trade) ≥ " + fmt(c.margin_bar, 2), c.margin_ok, "bar " + fmt(c.margin_bar) + " · actual " + fmt(j.margin), na));
-      out.push(gateRow("ALT: CONFIDENCE ≥ " + fmt(c.conf_bar, 2), c.conf_ok, "actual " + fmt(j.confidence), na));
+      // spot logs `confidence`, perp logs `conf` — accept either
+      const confV = (j.confidence !== undefined && j.confidence !== null) ? j.confidence : j.conf;
+      const noulV = j.noul;
+      const bookTag = usePerp ? " (X-PERP)" : " (SPOT)";
+      out.push(gateRow("MARGIN p(chosen)−p(no_trade) ≥ " + fmt(c.margin_bar, 2) + bookTag, c.margin_ok, "bar " + fmt(c.margin_bar) + " · actual " + fmt(j.margin), na));
+      out.push(gateRow("ALT: CONFIDENCE ≥ " + fmt(c.conf_bar, 2), c.conf_ok, "actual " + fmt(confV), na));
       if (c.conf_floor !== undefined) {
-        const cfOk = na ? null : (j.confidence >= c.conf_floor);
-        out.push(gateRow("CONF FLOOR ≥ " + fmt(c.conf_floor, 2) + " (hard, v3.8+)", cfOk, "actual " + fmt(j.confidence) + " · conjunctive — OR-path still needs this", na));
+        const cfOk = na ? null : (confV >= c.conf_floor);
+        out.push(gateRow("CONF FLOOR ≥ " + fmt(c.conf_floor, 2) + (usePerp ? " (perp burn-in)" : " (hard, v3.8+)"), cfOk, "actual " + fmt(confV) + " · conjunctive — OR-path still needs this", na));
       }
-      out.push(gateRow("NOUL RISE-PROB ≥ " + fmt(c.noul_bar, 2), c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(j.noul), na));
+      out.push(gateRow(usePerp ? "NOUL MOVE-PROB ≥ " + fmt(c.noul_bar, 2) : "NOUL RISE-PROB ≥ " + fmt(c.noul_bar, 2), c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(noulV), na));
       out.push(gateRow("FINAL ENGINE VERDICT", c.fire, c.fire ? "TRADE AUTHORIZED" : (na ? "JEV: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
     }
-    out.push(gateRow("DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
-    out.push(gateRow("DAILY LOSS BREAKER −8%", !r.breaked, r.breaked ? "TRIPPED — HALTED" : "clear"));
-    // ACTIVE cooldowns only (exits map is historical; engine windows: loss 20m, win 10m)
+    out.push(gateRow(usePerp ? "DEPTH FLOOR (top5 book ≥ 3× notional)" : "DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
+    out.push(gateRow("DAILY LOSS BREAKER −8%", !r.breaked && !((D.perp || {}).breaked),
+      (r.breaked || (D.perp || {}).breaked) ? "TRIPPED — HALTED" : "clear"));
+    // ACTIVE cooldowns only (exits maps are historical). Windows come from the
+    // LIVE engine's source via live_risk (never hardcoded — they drifted twice),
+    // falling back to the retired spot book's windows if absent.
     const now = Date.now();
+    const lr = D.live_risk || {};
+    const lossMin = lr.loss_min || 20, winMin = lr.win_min || 10;
+    const cdExits = (usePerp ? lr.exits : r.cooldowns) || {};
     const active = [];
-    Object.entries(r.cooldowns || {}).forEach(([inst, e]) => {
+    Object.entries(cdExits).forEach(([inst, e]) => {
       const ts = Date.parse(e.ts || "");
       if (!ts) return;
       const ageMin = (now - ts) / 60000;
       const win = (e.upc || 0) > 0;
-      const lim = win ? 10 : 20;
-      if (ageMin < lim) active.push(inst.replace("-EUR", "") + " " + Math.round(lim - ageMin) + "m");
+      const lim = win ? winMin : lossMin;
+      if (ageMin < lim) {
+        // perp exit keys are "INST:side"; spot keys are plain "PAIR-EUR"
+        let nm = String(inst), sd = "";
+        const ci = nm.indexOf(":");
+        if (ci > 0) { sd = nm.slice(ci + 1); nm = nm.slice(0, ci); }
+        nm = nm.replace("-EUR", "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, "");
+        active.push(nm + (sd ? "/" + sd : "") + " " + Math.round(lim - ageMin) + "m");
+      }
     });
-    out.push(gateRow("PAIR COOLDOWNS (win 10m / loss 20m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
+    out.push(gateRow("PAIR COOLDOWNS (win " + winMin + "m / loss " + lossMin + "m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
     out.push(gateRow("MOMENTUM GATES PRE-JEV", true, "chg30 · bars_up · range30 · vol30 · taker share"));
     out.push(gateRow("SERVER-SIDE OCO TP/SL + HWM TRAIL", true, "exits execute on-exchange, even offline"));
     $("gates-body").innerHTML = out.join("");
@@ -430,7 +499,7 @@
         "<td class='am'>" + fmt(b.trail_arm_pct, 2) + "/" + fmt(b.trail_giveback_pct, 2) + "</td></tr>";
     }).join("");
     $("universe-body").innerHTML =
-      '<div class="perp-h">BOOK 1 · SPOT EUR (LONG-ONLY)</div>' +
+      '<div class="perp-h">RETIRED BOOK · SPOT EUR (LONG-ONLY) — no longer scanned for trading</div>' +
       '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(u.scanned_iso)) + ' UTC · ' +
       (u.n_eur_pairs || "?") + " EUR PAIRS → LIQUIDITY+RANGE+DEPTH FILTER → " + (u.n_candidates || "?") +
       ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO JEV · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
@@ -442,7 +511,7 @@
     const P = D.perp || {};
     const sel = P.universe_selected || [];
     const scanIso = P.universe_scanned_iso;
-    let html = '<div class="perp-h" style="margin-top:10px">BOOK 2 · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
+    let html = '<div class="perp-h" style="margin-top:10px">LIVE BOOK · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
     if (!sel.length) {
       html += '<div class="dim">SCAN ' + esc(mmdd_hhmm(scanIso)) + ' UTC · ' +
         (P.universe || []).length + ' CONTRACTS SELECTED (detail pending next scan)</div>';
@@ -471,7 +540,20 @@
   /* ---------- positions ---------- */
   function renderPositions(D) {
     const ps = D.positions || [];
+    const sb = (D.engine || {}).spot_book || {};
+    const retired = /retired/i.test(String(sb.status || ""));
     if (!ps.length) {
+      if (retired) {
+        // The spot book no longer trades — its capital moved to the X-Perp book.
+        // Saying "FLAT, scanning every 5m" would imply a live engine that isn't.
+        $("pos-body").innerHTML = '<div class="dim">' + esc(sb.status || "RETIRED") +
+          ' — the long-only EUR spot book no longer trades. Its collateral was converted to ' +
+          'USDC and moved to the live X-Perp book (see above). ' +
+          (sb.trades_closed ? 'FINAL RECORD: ' + fmt(sb.trades_closed, 0) + ' CLOSED TRADES · ' +
+            sgn(sb.net_eur) + ' EUR (' + sgn(sb.net_pct) + '% of launch capital) · PF ' + fmt(sb.profit_factor, 2) + '. ' : '') +
+          'The full ledger and trade replays below remain available as an honest record.</div>';
+        return;
+      }
       $("pos-body").innerHTML = '<div class="dim">FLAT — NO OPEN POSITIONS. ENGINE HOLDS CASH IN EUR, SCANS EVERY ' +
         (D.engine.cycle_s / 60) + 'M CYCLE. FLAT IS A POSITION: A MISSED SCALP COSTS 0, A CHOP COSTS ~0.5-0.9%.</div>';
       return;
@@ -1215,17 +1297,24 @@ function bootSequence(D) {
   if (sessionStorage.getItem("obekt_booted")) { el.remove(); return; }
   sessionStorage.setItem("obekt_booted", "1");
   const f = D.funnel || {}, eq = D.equity || {}, s = D.stats || {};
+  const P = D.perp || {}, ps = P.stats || {};
+  const spotRetired = /retired/i.test(String(((D.engine || {}).spot_book || {}).status || ""));
   const lines = [
     "▚▚ OBEKT TERMINAL " + ((D.engine || {}).version || "v3.5") + " — AUTONOMOUS TRADING OBSERVATION DECK",
     "",
-    "[ok] link okx europe (eea) spot ............ " + ((D.tickers || []).length || 10) + " EUR FEEDS SYNCED",
+    "[ok] link okx europe (eea) .................. " + ((D.tickers || []).length || 10) + " MARKET FEEDS SYNCED",
     "[ok] engine log ........................... " + (f.cycles ? f.cycles.toLocaleString() : "—") + " CYCLES · " + (f.uptime_h || "—") + "H UNATTENDED",
     "[ok] jev system-one decision model ......... " + (f.jev_calls || "—") + " TYPED CALLS · $" + ((f.usd_all !== undefined) ? f.usd_all.toFixed(2) : "—") + " SPENT",
     "[ok] selectivity funnel .................... " + (f.pair_scans_all ? f.pair_scans_all.toLocaleString() : "—") + " SCANS → " + (f.opens || "—") + " TRADES OPENED",
     "[ok] halogen-qwen3.8-flash-next desk llm ... COMMENTARY STREAM ARMED",
     "[ok] news/sentiment/macro injection ......... RSS + FEAR&GREED + ECON CALENDAR",
     "[ok] risk layer ............................. SERVER-SIDE OCO + HWM TRAIL + BREAKER",
-    "[ok] live capital ........................... €" + (eq.equity_eur !== undefined ? eq.equity_eur.toFixed(2) : "—") + " EQUITY · " + (s.trades_all || "—") + " REALIZED TRADES",
+    "[ok] live capital ........................... " + (spotRetired
+      ? "$" + (P.usdc_equity !== undefined ? P.usdc_equity.toFixed(2) : "—") + " USDC COLLATERAL · " +
+        (ps.trades_all || 0) + " X-PERP TRADES · SPOT BOOK RETIRED (" +
+        (s.trades_all || 0) + " EUR TRADES ON RECORD)"
+      : "€" + (eq.equity_eur !== undefined ? eq.equity_eur.toFixed(2) : "—") + " EQUITY · " +
+        (s.trades_all || "—") + " REALIZED TRADES"),
     "",
     "◈ THIS IS A LIVE SYSTEM TRADING REAL MONEY, NOT A DEMO.",
     "◈ NOTHING IS STAGED — EVERY NUMBER STREAMS FROM THE ENGINE.",

@@ -52,22 +52,63 @@ CONTACT_LINE = os.environ.get(
     "TERMINAL_CONTACT_LINE",
     "OBEKT AUTONOMOUS TRADING PLATFORM  //  BUILT BY OBEKT AI WORKS -> https://obekt.com")
 
-def _engine_bars():
-    """Parse the live gate thresholds from okx_jev.py so the deck's DECISION GATES
-    panel can never drift from what the engine actually enforces. Falls back to
-    the current production values if parsing fails."""
+def _engine_bars(fname="okx_jev.py"):
+    """Parse gate thresholds from a specific engine's source so the deck's
+    DECISION GATES panel can never drift from what that engine enforces.
+
+    MUST be called with the engine whose decisions are actually being displayed:
+    the spot and perp books run DIFFERENT bars (spot CONF_FLOOR 0.50 vs perp
+    burn-in 0.40), so scoring one book's call against the other's thresholds
+    would show a contradiction — the exact drift this function exists to prevent.
+    """
     defaults = (0.30, 0.50, 0.50, 0.45)  # MARGIN_BAR, CONF_BAR, CONF_FLOOR, NOUL_BAR
+    names = ("MARGIN_BAR", "CONF_BAR", "CONF_FLOOR", "NOUL_BAR")
     try:
-        src = open(os.path.join(BASE, "okx_jev.py")).read(32768)
+        src = open(os.path.join(BASE, fname)).read(32768)
+    except Exception:
+        return defaults
+    def _num(name):
+        m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
+        return float(m.group(1)) if m else None
+    vals = [_num(n) for n in names]
+    return tuple(vals) if all(v is not None for v in vals) else defaults
+
+
+def _perp_cooldowns():
+    """Cooldown windows parsed from the LIVE engine source (never hardcoded — they
+    drifted twice already) plus the perp risk-state exits map, so the gates panel
+    shows the live book's lockouts rather than the retired spot book's frozen ones.
+    """
+    try:
+        src = open(os.path.join(BASE, "okx_perp.py")).read(32768)
         def _num(name):
             m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
-            return float(m.group(1)) if m else None
-        vals = [_num(n) for n in ("MARGIN_BAR", "CONF_BAR", "CONF_FLOOR", "NOUL_BAR")]
-        if all(v is not None for v in vals):
-            return tuple(vals)
+            return int(float(m.group(1))) if m else None
+        loss = _num("COOLDOWN_MIN")
+        win = _num("WIN_COOLDOWN_MIN")
     except Exception:
-        pass
-    return defaults
+        loss = win = None
+    exits = (_load_json(os.path.join(BASE, "perp_risk_state.json"), {}) or {}).get("exits") or {}
+    return {"loss_min": loss or 20, "win_min": win or 10, "exits": exits}
+
+
+def _perp_engine_version():
+    """ENGINE_VERSION from okx_perp.py source — single source of truth, so the
+    perp panel's version can never drift from the engine actually running."""
+    try:
+        src = open(os.path.join(BASE, "okx_perp.py")).read(16384)
+        m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+# 2026-10-15: the operator consolidated the account into the two-way book. The
+# spot EUR engine's timer is disabled and its EUR was converted to USDC, so the
+# spot book no longer trades. ONE flag drives every "retired" label and the
+# version string so the deck can't contradict itself; flip it back to False if
+# the spot timer is ever re-enabled.
+SPOT_BOOK_RETIRED = True
 
 
 def _engine_version():
@@ -82,9 +123,14 @@ def _engine_version():
             return None
     spot = _ver("okx_jev.py")
     perp = _ver("okx_perp.py")
-    if spot and perp:
+    # Live book first. If spot is retired, saying "SPOT vX + PERP vY" implies two
+    # running engines when one is switched off. Driven by SPOT_BOOK_RETIRED so the
+    # label can never disagree with the rest of the deck.
+    if perp and spot:
+        if SPOT_BOOK_RETIRED:
+            return "X-PERPS %s (LIVE) · SPOT %s (retired)" % (perp, spot)
         return "SPOT %s + PERP %s" % (spot, perp)
-    return spot or perp or "unknown"
+    return perp or spot or "unknown"
 
 # Launch bankroll (09-28) — the anchor for the all-time realized return %.
 # Realized trading P&L is expressed against THIS, not against a moving equity
@@ -92,14 +138,56 @@ def _engine_version():
 # for the perp book is a transfer, not a loss).
 LAUNCH_EUR = 147.77
 
+# X-Perp book capital base. Like LAUNCH_EUR, this anchors the perp book's
+# all-time return % to money actually PUT IN — not to a moving equity value.
+# Each entry is (iso UTC timestamp, USDC added). The account-level LAUNCH_EUR is
+# unaffected: moving EUR into USDC is a TRANSFER between books, not a loss.
+#   07:22 book funded   22.4017 USDC (bought with ~EUR 20)
+#   12:06 consolidation +111.7876 USDC (EUR 99.73 converted at 0.89211, the
+#         operator-directed move of the spot bankroll into the two-way book)
+PERP_CAPITAL_EVENTS = (
+    ("2026-10-15T07:22:07+00:00", 22.4017),
+    ("2026-10-15T12:06:30+00:00", 111.7876),
+)
+PERP_CAPITAL_USD = round(sum(a for _, a in PERP_CAPITAL_EVENTS), 4)
+
+
+def _perp_capital_at(iso_ts):
+    """USDC put into the perp book as of iso_ts. Injections are CAPITAL, not
+    P&L — without this the consolidation would show up as a +498% 'gain'."""
+    if not iso_ts:
+        return PERP_CAPITAL_USD
+    base = 0.0
+    for ts, amt in PERP_CAPITAL_EVENTS:
+        if ts <= iso_ts:
+            base += amt
+        else:
+            break
+    return base or PERP_CAPITAL_USD
+
+
 ENGINE = {
     "version": _engine_version(),
-    "venue": "OKX EUROPE (EEA) · SPOT + X-PERPS",
+    # 10-15: the operator consolidated the account into the two-way book — EUR was
+    # converted to USDC and the spot engine's timer was DISABLED (not deleted; the
+    # code and its 132-trade record stay). So: one live book, X-Perps only.
+    "venue": "OKX EUROPE (EEA) · X-PERPS",
     "cycle_s": 300,
-    "quote": "EUR / USDC",
+    "quote": "USDC",
     "decision_model": "jev-latest (TypeSafe System One)",
     "desk_model": LLM_MODEL,
     "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
+    "spot_book": {
+        "status": "RETIRED 2026-10-15" if SPOT_BOOK_RETIRED else "ACTIVE",
+        "why": ("Capital consolidated into the X-Perp book at operator direction. The spot "
+                "EUR book was long-only (no way to profit from a decline) and carried ~0.25% "
+                "round-trip fees vs the perp book's ~0.07%. Engine code and full history "
+                "retained; its systemd timer is disabled, so it no longer trades."),
+        "trades_closed": None,      # filled from the log by build() — never hardcode,
+        "net_eur": None,            # it drifts the moment the engine trades again
+        "net_pct": None,
+        "profit_factor": None,
+    },
 }
 
 
@@ -1021,6 +1109,9 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     perp = perp or {}
     perp_positions = perp.get("positions") or []
     perp_stats = perp.get("stats") or {}
+    # True when the spot book has been decommissioned: the payload then reports the
+    # perp book as "today" and labels every spot number as frozen history.
+    _spot_retired = SPOT_BOOK_RETIRED
     perp_open = [{
         "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),
         "entry": p.get("entry_ref"), "notional_usd": p.get("notional_usd"),
@@ -1031,15 +1122,22 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "mode": ENGINE["mode"],
             "live_capital": True,
             "halted": os.path.exists(os.path.join(BASE, "STOP")),
+            "spot_book_status": ENGINE.get("spot_book", {}).get("status"),
+            "spot_book_why": ENGINE.get("spot_book", {}).get("why"),
             "spot_open_positions": len(positions or []),
             "perp_open_positions": len(perp_positions),
             "open_positions": len(positions or []) + len(perp_positions),
             "perp_halted": perp.get("halted"),
-            "day_trades": equity.get("day_trades"),
+            # day_trades = the LIVE book's count once spot is retired (spot's is frozen)
+            "day_trades": (perp_stats.get("day_trades") if _spot_retired
+                           else equity.get("day_trades")),
+            "day_trades_book": "live X-Perp book" if _spot_retired else "spot book",
         },
-        "equity": equity,
-        "stats": {k: stats[k] for k in ("trades_all", "win_rate_pct", "net_all_eur",
-                                        "profit_factor", "fees_all_eur")},
+        # these two are the RETIRED spot book's numbers — relabelled so they are
+        # never read as current account state (live_equity above is the truth)
+        "retired_spot_equity_series": equity,
+        "retired_spot_stats": {k: stats.get(k) for k in ("trades_all", "win_rate_pct", "net_all_eur",
+                                                         "profit_factor", "fees_all_eur")},
         "perp_book": {
             "open_positions": perp_open,
             "usdc_collateral": perp.get("usdc_equity"),
@@ -1050,13 +1148,51 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "closed_trades": perp_stats.get("trades_all"),
             "realized_pct": perp_stats.get("net_all_pct"),
         },
-        "latest_decision": jev_latest and {
+        # LIVE decision stream = the perp book. This is the only thing to call
+        # "the latest decision": the spot engine is retired and its last logged
+        # call is a frozen historical artifact that would otherwise be narrated
+        # as a current intent (it did exactly that before this split).
+        "live_decision": (perp.get("last_jev") or {}) and {
+            "book": "X-PERP (LIVE)",
+            "ts": (perp.get("last_jev") or {}).get("ts"),
+            "choice": (perp.get("last_jev") or {}).get("choice"),
+            "inst": (perp.get("last_jev") or {}).get("chosen_inst"),
+            "side": (perp.get("last_jev") or {}).get("chosen_side"),
+            "conf": (perp.get("last_jev") or {}).get("conf"),
+            "margin": (perp.get("last_jev") or {}).get("margin"),
+            "noul": (perp.get("last_jev") or {}).get("noul"),
+            "probabilities": (perp.get("last_jev") or {}).get("probabilities"),
+            "gate_verdict": ((perp.get("last_jev") or {}).get("criteria") or {}).get("fire"),
+        },
+        # The retired spot book's FINAL logged call — explicitly labelled as
+        # historical. Never describe it as the current decision or intent.
+        "retired_spot_last_call": jev_latest and {
+            "book": "SPOT (RETIRED — historical record only, not trading)",
             "ts": jev_latest["ts"], "choice": jev_latest["choice"],
             "inst": jev_latest["chosen_inst"], "conf": jev_latest["confidence"],
             "margin": jev_latest["margin"], "noul": jev_latest["noul"],
             "probabilities": jev_latest["probabilities"]},
-        "recent_trades": [{k: t[k] for k in ("inst", "upc", "net_eur", "reason", "close_ts")}
-                          for t in recent],
+        "live_equity": {"usdc_collateral": perp.get("usdc_equity"),
+                        "eur_float": perp.get("eur_float"),
+                        "account_total_usd": perp.get("account_total_usd"),
+                        "capital_put_in": perp_stats.get("capital_usd"),
+                        "realized_usd_all_time": perp_stats.get("net_all_usd"),
+                        "realized_pct_all_time": perp_stats.get("net_all_pct"),
+                        "today_trades": perp_stats.get("day_trades"),
+                        "today_pnl_pct": perp_stats.get("day_pnl_pct")},
+        "retired_spot_record": {
+            "status": ENGINE.get("spot_book", {}).get("status"),
+            "trades_closed": stats.get("trades_all"),
+            "win_rate_pct": stats.get("win_rate_pct"),
+            "net_eur": stats.get("net_all_eur"),
+            "net_pct_of_launch": stats.get("net_all_pct"),
+            "profit_factor": stats.get("profit_factor"),
+            "fees_eur": stats.get("fees_all_eur"),
+        },
+        # spot closed trips, labelled as history
+        "recent_trades_retired_spot": [
+            {k: t[k] for k in ("inst", "upc", "net_eur", "reason", "close_ts") if k in t}
+            for t in recent],
         "news": news[:6],
         "fear_greed": (sentiment or {}).get("fear_greed"),
         "funding_bps": jev_latest and jev_latest.get("funding_bps"),
@@ -1079,16 +1215,31 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     prompt = (
         "You are the desk commentator for OBEKT TERMINAL, the Bloomberg-style observation dashboard of a "
         "LIVE autonomous crypto trading system trading REAL capital on OKX Europe (EEA), 5-min cycles. "
-        "It runs TWO books: (1) SPOT — EUR pairs, long-only; (2) X-PERPS — USD-settled MiFID expiry "
-        "perps, two-way (LONG and SHORT), USDC collateral, 1x isolated. "
-        "The dashboard displays telemetry read-only, but the ENGINES behind it place real orders: they are "
+        "It runs ONE live book: X-PERPS — USD-settled MiFID expiry perps, two-way (LONG and SHORT), "
+        "USDC collateral, 1x isolated. "
+        "A second book, SPOT (EUR pairs, long-only), was RETIRED on 2026-10-15: trading_state."
+        "spot_book_status says so and spot_book_why gives the reason. Its engine code and full trade "
+        "history remain on the dashboard as a record, but it no longer trades — spot_open_positions will "
+        "stay 0 permanently and that is EXPECTED, not a malfunction or an idle engine. "
+        "Do not describe spot as live, paused, waiting or idle. If you mention it at all, describe it as "
+        "retired with its final record. "
+        "CRITICAL — read the payload keys by their labels: live_decision, live_equity and perp_book are "
+        "the CURRENT system. Keys prefixed retired_spot_ (retired_spot_last_call, retired_spot_record, "
+        "retired_spot_stats, retired_spot_equity_series, recent_trades_retired_spot) are FROZEN HISTORY. "
+        "Never present a retired_spot_last_call as the latest decision or current intent — that was the "
+        "last thing the spot engine logged before it was switched off, and it may be hours or days old. "
+        "When you refer to 'the latest decision', mean live_decision (the X-Perp call). "
+        "If live_decision has no inst, the model chose no_trade and the engine is standing aside — that is "
+        "a real, correct state, not missing data. "
+        "The dashboard displays telemetry read-only, but the ENGINE behind it places real orders: it is "
         "NEVER in demo, paper, showcase or read-only trading mode. The trading_state block in the snapshot "
         "is authoritative — halted=true means the kill switch is on; otherwise it is trading live. "
-        "open_positions counts BOTH books (spot_open_positions + perp_open_positions); the perp_book block "
+        "open_positions is now effectively perp_open_positions; the perp_book block "
         "lists each open X-Perp position with its side (long/short). "
         "Few or zero trades in a day is normal gate selectivity, not a mode change. "
-        "Each engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
-        "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text); "
+        "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
+        "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text, "
+        "scored in BOTH directions per contract); "
         "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
         "LIVE SYSTEM SNAPSHOT (UTC):\n" + payload_txt + "\n\n"
         "Write for sophisticated visitors who might hire the sysop to build one. Rules: "
@@ -1177,10 +1328,25 @@ def build_perp():
     longs = [t for t in trips if t.get("side") == "long"]
     shorts = [t for t in trips if t.get("side") == "short"]
     wins = [t for t in trips if (t.get("net_usd") or 0) > 0]
+    # Equity curve in % of CAPITAL PUT INTO THE PERP BOOK AS OF EACH TRADE — not a
+    # sum of per-trade net_pct (that mixes $8 and $130 notionals and is meaningless).
+    # Injections raise the denominator, so the consolidation never shows as a gain.
     cum, run = [], 0.0
     for t in sorted([x for x in trips if x.get("close_ts")], key=lambda x: x["close_ts"]):
-        run = round(run + (t.get("net_pct") or 0), 3)
-        cum.append(run)
+        run += (t.get("net_usd") or 0)
+        base = _perp_capital_at(t.get("close_ts"))
+        cum.append(round(100 * run / base, 3) if base else 0.0)
+    # all-time realized % uses the CURRENT capital base (money in the book now)
+    net_all_usd_val = sum((t.get("net_usd") or 0) for t in trips)
+    net_all_pct = round(100 * net_all_usd_val / PERP_CAPITAL_USD, 2) if PERP_CAPITAL_USD else None
+
+    # TODAY for the live book: realized USD from trades closed today, as a % of
+    # the engine's own day_equity_start (re-based whenever capital moves, so this
+    # stays meaningful across the consolidation). Unrealized on an open position
+    # is NOT included — realized only, matching how the spot book reported.
+    today_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    day_trips = [t for t in trips if (t.get("close_ts") or "").startswith(today_utc)]
+    day_net_usd = sum((t.get("net_usd") or 0) for t in day_trips)
 
     # live collateral + open positions from the perp engine's own files
     pmeta = _load_json(os.path.join(BASE, "perp_positions.json"), {}) or {}
@@ -1218,12 +1384,47 @@ def build_perp():
                         "collateral_usdc": e.get("collateral_usdc"),
                         "budget_usd": e.get("budget_usd"),
                         "tokens": {"in": e.get("input_tokens"), "out": e.get("output_tokens")}}
+            # Gate verdict for the LIVE book, scored against the PERP engine's own
+            # bars (parsed from okx_perp.py source — never hardcoded, and never
+            # the spot engine's, whose CONF_FLOOR differs at 0.50 vs 0.40).
+            # Same fire rule the engine enforces:
+            #   edge = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
+            #   fire = edge and noul >= NOUL_BAR
+            pMBAR, pCBAR, pCFLOOR, pNBAR = _engine_bars("okx_perp.py")
+            p_conf = e.get("conf")
+            p_margin = e.get("margin")
+            p_noul = e.get("noul")
+            na = not e.get("chosen_inst")
+            last_jev["criteria"] = {
+                "margin_bar": pMBAR, "conf_bar": pCBAR,
+                "conf_floor": pCFLOOR, "noul_bar": pNBAR,
+                "margin_ok": None if na else (p_margin is not None and p_margin >= pMBAR),
+                "conf_ok": None if na else (p_conf is not None and p_conf >= pCBAR),
+                "noul_ok": None if na else (p_noul is not None and p_noul >= pNBAR),
+                "confidence": p_conf,
+                "fire": False if na else bool(
+                    ((p_margin is not None and p_margin >= pMBAR) or
+                     (p_conf is not None and p_conf >= pCBAR))
+                    and (p_conf is not None and p_conf >= pCFLOOR)
+                    and (p_noul is not None and p_noul >= pNBAR)),
+                "book": "x-perp",
+                "engine_source": "okx_perp.py",
+            }
             break
     return {
-        "engine": "v4.0-perp", "venue": "OKX EUROPE X-PERPS (MiFID)",
+        # version read from the perp engine source (never hardcoded — it drifted
+        # to a stale "v4.0-perp" string the first time this block was written)
+        "engine": _perp_engine_version(),
+        "venue": "OKX EUROPE X-PERPS (MiFID)",
         "halted": os.path.exists(os.path.join(BASE, "STOP")) or os.path.exists(os.path.join(BASE, "STOP_PERP")),
         "breaked": prank.get("breaked"), "day": prank.get("day"),
         "usdc_equity": psnap.get("usdc_equity"),
+        # WHOLE-ACCOUNT truth from the engine snapshot. Before this the deck read
+        # cash from the retired spot engine's last jev event, frozen at the
+        # pre-conversion 100.73 EUR, and the desk note repeated it as current.
+        "eur_float": psnap.get("eur_float"),
+        "account_total_usd": psnap.get("account_total_usd"),
+        "collateral_ccy": psnap.get("collateral_ccy") or "USDC",
         "status_ts": psnap.get("ts"),
         "universe": puniv.get("pairs", []),
         "universe_selected": puniv.get("selected", []),
@@ -1237,8 +1438,16 @@ def build_perp():
             "trades_all": len(trips),
             "win_rate_pct": round(100 * len(wins) / len(trips), 1) if trips else None,
             "longs": len(longs), "shorts": len(shorts),
-            "net_all_pct": round(sum((t.get("net_pct") or 0) for t in trips), 2),
-            "net_all_usd": round(sum((t.get("net_usd") or 0) for t in trips), 2),
+            "net_all_pct": net_all_pct,
+            "net_all_usd": round(net_all_usd_val, 2),
+            "capital_usd": PERP_CAPITAL_USD,
+            "day_trades": len(day_trips),
+            "day_net_usd": round(day_net_usd, 2),
+            # % of the engine's own day_equity_start (re-based on capital moves)
+            "day_pnl_pct": (round(100 * day_net_usd / float(prank.get("day_equity_start")), 2)
+                            if prank.get("day_equity_start") else None),
+            "day_equity_start": prank.get("day_equity_start"),
+            "breaked": prank.get("breaked"),
         },
         "cum_pnl_pct": cum,
     }
@@ -1301,6 +1510,13 @@ def build():
         "funding_bps": jev_latest.get("funding_bps") if jev_latest else None,
     }
 
+    # Retired spot book: publish its FINAL record, derived from the log — not
+    # hardcoded, so it stays true even if someone re-enables the timer.
+    ENGINE["spot_book"]["trades_closed"] = stats.get("trades_all")
+    ENGINE["spot_book"]["net_eur"] = stats.get("net_all_eur")
+    ENGINE["spot_book"]["net_pct"] = stats.get("net_all_pct")
+    ENGINE["spot_book"]["profit_factor"] = stats.get("profit_factor")
+
     desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions, perp)
 
     data = {
@@ -1309,6 +1525,9 @@ def build():
         "build_ms": int((time.time() - t0) * 1000),
         "engine": ENGINE,
         "contact": CONTACT_LINE,
+        # The LIVE book's cooldown state, windows parsed from okx_perp.py. The
+        # `risk` block below is the retired spot book's — kept for the record.
+        "live_risk": _perp_cooldowns(),
         "equity": equity,
         "stats": stats,
         "funnel": funnel,
