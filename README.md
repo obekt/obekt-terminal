@@ -162,6 +162,14 @@ python3 -m http.server 8770
 
 That's it — the full deck, charts, and click-to-replay trade dossiers, driven by our real (anonymized) data. No keys, no network, no risk.
 
+> **Maintainers:** `sample_data/` is a *frozen* snapshot and nothing regenerates it
+> automatically, so it rots silently after any payload change — a missing key makes
+> the demo render its old fallback while still claiming to be real telemetry. Run
+> `terminal/refresh-sample.sh <live-state-dir|user@host:path>` before committing. It
+> stages into a temp dir, secret-scans and schema-checks there, and only swaps into
+> `sample_data/` if everything passes, so bad input cannot corrupt the repo.
+> Exit 1 = schema, 2 = secret flagged, 3 = usage.
+
 ### B) The full live system (your capital, your keys, your responsibility)
 
 Read [DISCLAIMER.md](DISCLAIMER.md) first. Then:
@@ -297,13 +305,14 @@ This whole thing is written to be **operated by an AI agent**, not just a human.
 ├── docs/screenshots/       ← the images above
 ├── engine/                 ← the autonomous trader
 │   ├── okx_jev.py          ← the whole strategy: scan→gate→decide→execute→manage
-│   ├── news_feed.py        ← keyless RSS catalyst feed
-│   ├── social_feed.py      ← keyless Fear&Greed + CoinGecko sentiment
+│   ├── news_feed.py        ← keyless RSS catalyst feed (spot book only — retired)
+│   ├── social_feed.py      ← keyless Fear&Greed + CoinGecko sentiment (spot only)
 │   └── README.md
 ├── terminal/               ← the read-only observation deck
 │   ├── index.html  app.js  style.css
 │   ├── generate.py         ← log → data.js (+ LLM desk note, cached)
 │   ├── serve.py  deploy.sh  make_og.py
+│   ├── refresh-sample.sh   ← refresh sample_data/ safely (scan + schema gate)
 │   ├── sample_data/        ← frozen real telemetry → preview with ZERO credentials
 │   └── README.md
 └── skills/                 ← agent operating manuals
