@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.2-perp"
+ENGINE_VERSION = "v4.3-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -64,8 +64,18 @@ MIN_VOL30_PCT = 0.35           # realized 30m range reachability gate
 
 # ---------------- risk / sizing ----------------
 PERP_LEV = "1"                 # isolated leverage; 1x = margin == notional
-MAX_NOTIONAL_FRAC = 0.7        # of USDC equity — keeps buffer vs liquidation
-MAX_NOTIONAL_USD = 25.0        # hard cap while proven-in (raise after review)
+# FULL-CAPITAL (10-15, operator directive: "if you see opportunity use entire
+# capital — spot or short, it's trades"). Was 0.70 + a $25 notional cap, sized
+# as a liquidation buffer. That buffer protects against a risk this book does not
+# have: at PERP_LEV=1 isolated the exchange liqPx sits ~98% away (measured: BTC
+# short liqPx 161324 vs entry 81227), and the stop is ~0.12%, so per-trade risk
+# is the stop, not liquidation. A cash buffer only earns its keep at high
+# leverage. CANNOT be 1.00: posted margin + fees must fit inside equity or the
+# order is rejected for insufficient margin — 0.98 is the practical ceiling.
+# Re-introduce a buffer only if PERP_LEV is ever raised above 1.
+MAX_NOTIONAL_FRAC = 0.98       # of USDC equity — deploy (nearly) all of it
+MAX_NOTIONAL_USD = 1000.0      # NOT a capital cap (equity is ~$22); a bug guard
+                               # against a garbage usdc_equity() read
 MAX_OPEN = 1
 MAX_ENTRIES_PER_CYCLE = 1
 LIQ_BUFFER_PCT = 15.0          # force-close if price comes within 15% of liqPx

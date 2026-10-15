@@ -116,7 +116,7 @@ Same shape, two-way. Key constants at its top:
 | constant | default | meaning |
 |---|---|---|
 | `PERP_LEV` | 1 | isolated leverage; 1× = margin equals notional (liquidation ~99% away) |
-| `MAX_NOTIONAL_USD` / `MAX_NOTIONAL_FRAC` | 25 / 0.7 | hard cap + fraction of USDC equity per position |
+| `MAX_NOTIONAL_FRAC` / `MAX_NOTIONAL_USD` | 0.98 / 1000 | fraction of USDC equity deployed per position — **full-capital by operator directive**. Was 0.70: a liquidation buffer that protected against a risk this book doesn't carry at 1× isolated (measured liqPx ~98% away; the stop, not liquidation, defines per-trade risk). 0.98 is the ceiling because posted margin + fees must fit inside equity. The `USD` term is a bug guard against a garbage equity read, not a capital cap. Re-introduce a buffer only if `PERP_LEV` goes above 1. |
 | `PERP_MAKER_PCT` / `PERP_TAKER_PCT` | 0.02 / 0.05 | X-Perp fees — ~0.07% round trip vs spot's ~0.3% |
 | `MIN_TARGET_PCT` / `MAX_TARGET_PCT` | 0.6 / 2.0 | TP clamp, shrunk because the perp round trip is ~4× cheaper |
 | `CONF_FLOOR` | 0.40 | **burn-in value** (10-15): Jev emits lower confidence on these instruments; spot's 0.50 blocked 15/16 calls. Recalibrate from ~30 closed perp trades. |

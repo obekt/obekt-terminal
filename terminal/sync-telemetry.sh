@@ -1,19 +1,33 @@
 #!/bin/bash
-# Obekt Terminal — telemetry bridge (runs on the Mac, pushes to hostinger)
+# Obekt Terminal — telemetry bridge
+#
+# Optional convenience script: pushes raw engine telemetry from a machine that
+# runs the engine to the machine that serves the terminal deck. Not needed if
+# the engine and the deck live on the same host.
 #
 # Pushes ONLY the raw telemetry the terminal needs. Explicit whitelist: the
 # engine's own source, credentials and anything else never leaves this box.
 # Safe to run every minute; rsync only transfers what changed.
 #
-#   Usage:  ./sync-telemetry.sh            # one push
-#           VERBOSE=1 ./sync-telemetry.sh  # show transfer stats
+#   Usage:  TRADER_DEST=user@host:/path/to/data ./sync-telemetry.sh   # one push
+#           VERBOSE=1 ./sync-telemetry.sh                             # transfer stats
 #
 # Install as a launchd agent or cron:  * * * * * /path/to/sync-telemetry.sh
+#
+# TRADER_DEST is REQUIRED and has no default on purpose: this file is public,
+# so a hardcoded host would publish infrastructure detail. Export it in your
+# shell profile or the cron/launchd environment, e.g.
+#   export TRADER_DEST=trader@myhost:/opt/trader/data/
 
 set -euo pipefail
 
 SRC="${OKX_SRC:-$HOME/.hermes/workspace/okx}"
-DEST="${TRADER_DEST:-root@100.113.195.75:/opt/trader/data/}"
+DEST="${TRADER_DEST:-}"
+if [ -z "$DEST" ]; then
+  echo "error: TRADER_DEST is not set." >&2
+  echo "  export TRADER_DEST=user@host:/path/to/trader/data" >&2
+  exit 2
+fi
 LOCK="/tmp/obekt-telemetry-sync.lock"
 
 # --- the whitelist. Nothing outside this list is ever sent. -----------------
