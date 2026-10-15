@@ -269,9 +269,13 @@
 
   /* ---------- equity curve (SVG) ---------- */
   function renderEquity(D) {
-    // v4: cumulative realized P&L as PERCENT, not fiat
-    const cum = (D.stats || {}).cum_pnl_pct || [];
-    $("equity-meta").textContent = cum.length + " CLOSED TRADES · LEDGER-VERIFIED, NET OF FEES · RETURN VS LAUNCH CAPITAL (%)";
+    // v4: cumulative realized P&L as PERCENT, not fiat (fall back to fiat series
+    // only for old frozen sample_data so the zero-cred demo never renders empty)
+    const S = D.stats || {};
+    const cum = S.cum_pnl_pct || S.cum_pnl || [];
+    const isPct = !!S.cum_pnl_pct;
+    $("equity-meta").textContent = cum.length + " CLOSED TRADES · LEDGER-VERIFIED, NET OF FEES · " +
+      (isPct ? "RETURN VS LAUNCH CAPITAL (%)" : "NET P&L");
     if (cum.length < 2) { $("equity-body").textContent = "AWAITING TRADES…"; return; }
     const W = 1000, H = 150, PAD = 8;
     const mn = Math.min(0, Math.min.apply(null, cum)), mx = Math.max(0, Math.max.apply(null, cum));

@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.1-perp"
+ENGINE_VERSION = "v4.2-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -372,7 +372,25 @@ def close_perp_market(inst, side, contracts):
         logrec({"event": "perp_dry_close", "inst": inst, "side": side, "sz": str(contracts)})
         return None
     d = J.api("POST", "/api/v5/trade/order", body)
-    return d[0]
+    o = d[0] if d else {}
+    oid = o.get("ordId")
+    # The POST response has no avgPx/fee — a market fill lands async, so read the
+    # order detail (retry briefly) to capture the REALIZED exit fee + fill price.
+    # Without this the close log records fee=None and the terminal's perp P&L
+    # silently omits the exit fee (overstates returns) — same class of bug as the
+    # -32% sum-of-stake-% error. Fee on FUTURES is quoted in the settle ccy (USDC).
+    od = None
+    if oid:
+        for _ in range(4):
+            try:
+                od = J.order_detail(inst, oid)
+                if od.get("state") == "filled" or od.get("fee"):
+                    break
+            except Exception:
+                pass
+            time.sleep(1)
+        od = od or (J.order_detail(inst, oid) if oid else None)
+    return od or o
 
 # ---------------- manage ----------------
 
@@ -441,9 +459,24 @@ def manage():
                 continue
             if not why:
                 continue
-            close_perp_market(inst, side, float(m["contracts"]))
+            cod = close_perp_market(inst, side, float(m["contracts"]))
+            # Prefer the REALIZED fill price + fee from the close order detail.
+            # upc from the live ticker is only an estimate; the fill is truth.
+            exit_fee = None
+            exit_px = None
+            if cod:
+                exit_fee = cod.get("fee")
+                try:
+                    exit_px = float(cod.get("avgPx") or 0) or None
+                except Exception:
+                    exit_px = None
+                if exit_px and entry:
+                    upc = sgn * (exit_px - entry) / entry * 100
             logrec({"event": "perp_close", "inst": inst, "side": side, "reason": why,
-                    "upc": round(upc, 2), "age_min": round(age_min, 1)})
+                    "upc": round(upc, 2), "age_min": round(age_min, 1),
+                    "fill_px": exit_px, "realized_fee": exit_fee,
+                    "notional_usd": m.get("notional_usd"),
+                    "ordId": (cod or {}).get("ordId")})
             actions.append({"closed": inst, "side": side, "reason": why, "upc": round(upc, 2)})
             mark_exit(inst, side, upc)
             meta.pop(inst, None)
