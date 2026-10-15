@@ -52,15 +52,24 @@
 
   /* ---------- top bar ---------- */
   function renderTop(D) {
+    // Compact one-liner from the payload (generate.py _engine_header). The header
+    // must NOT compose version + venue + mode itself: that produced 179 chars /
+    // 1256px, wrapped the bar into four rows, repeated "X-PERPS" twice (once in the
+    // version string, once in the venue) and put the RETIRED spot engine's version
+    // next to the live one. Fallback keeps the old behaviour if header is absent.
     $("engine-meta").textContent =
-      D.engine.version + " · " + D.engine.venue + " · " + D.engine.mode +
-      " · DECISIONS: " + D.engine.decision_model;
+      (D.engine || {}).header ||
+      ((D.engine || {}).version + " · " + (D.engine || {}).venue);
     // persistent open-position badge (visible while scrolled anywhere on page)
     const badge = document.getElementById("pos-badge");
     if (badge) {
       const ob = openBook(D);
       if (!ob.length) {
-        badge.textContent = "◆ FLAT — NO OPEN POSITION";
+        // "FLAT — NO OPEN POSITION" said the same thing twice at 209px. FLAT is the
+        // word traders use; the detail goes in the tooltip and the hero already
+        // spells out "no open X-Perp position · capital in USDC".
+        badge.textContent = "◆ FLAT";
+        badge.title = "No open position — capital sitting in USDC";
         badge.className = "topmeta pos-badge flat";
       } else {
         badge.innerHTML = ob.map(r => {
@@ -69,6 +78,8 @@
           return '<span class="pb-side ' + (r.side === "short" ? "s" : "l") + '">' + arrow + " " +
             esc(r.inst) + upc + "</span>";
         }).join(" ");
+        badge.title = ob.map(r => (r.side === "short" ? "SHORT " : "LONG ") + r.inst +
+          " · " + r.book).join(", ");
         badge.className = "topmeta pos-badge";
       }
     }
@@ -622,6 +633,7 @@
         // and saying "the ledger below is its record" would be false too: the
         // TRADE LEDGER panel now streams the LIVE book. State what is actually here.
         $("pos-body").innerHTML = '<div class="dim">' + esc(sb.status || "RETIRED") +
+          (sb.version ? ' · ENGINE ' + esc(sb.version) : '') +
           ' — the long-only EUR spot book no longer trades. Its collateral was converted to ' +
           'USDC and moved to the live X-Perp book (see above). ' +
           (sb.trades_closed ? 'FINAL RECORD: ' + fmt(sb.trades_closed, 0) + ' CLOSED TRADES · ' +
@@ -1422,8 +1434,11 @@
   function renderClock() {
     const n = new Date();
     const p = (x) => String(x).padStart(2, "0");
+    // Time only in the header; the date is in the tooltip and in the snapshot line.
+    // It re-renders every second and its date half never changes on screen.
     $("clock").textContent = p(n.getUTCHours()) + ":" + p(n.getUTCMinutes()) + ":" +
-      p(n.getUTCSeconds()) + " UTC · " + n.toISOString().slice(0, 10);
+      p(n.getUTCSeconds()) + " UTC";
+    $("clock").title = n.toISOString().slice(0, 10) + " (UTC)";
     renderCountdown();
     // title: flash trades for 15s, then back to day P&L
     if (TITLE_FLASH) {

@@ -187,18 +187,28 @@ def _perp_engine_version():
 SPOT_BOOK_RETIRED = True
 
 
+def _src_version(fname):
+    """Read ENGINE_VERSION out of an engine source file. Parsed, never hardcoded."""
+    try:
+        src = open(os.path.join(BASE, fname)).read(16384)
+        m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
+        return m.group(1) if m else None
+    except Exception:
+        return None
+
+
+def _engine_versions():
+    return {"spot": _src_version("okx_jev.py"), "perp": _src_version("okx_perp.py")}
+
+
+_VERSIONS = _engine_versions()
+
+
 def _engine_version():
     """Combined version across both engines (spot okx_jev.py + perp okx_perp.py).
     Read from source = single source of truth; never hardcode (it drifts)."""
-    def _ver(fname):
-        try:
-            src = open(os.path.join(BASE, fname)).read(16384)
-            m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
-            return m.group(1) if m else None
-        except Exception:
-            return None
-    spot = _ver("okx_jev.py")
-    perp = _ver("okx_perp.py")
+    spot = _VERSIONS["spot"]
+    perp = _VERSIONS["perp"]
     # Live book first. If spot is retired, saying "SPOT vX + PERP vY" implies two
     # running engines when one is switched off. Driven by SPOT_BOOK_RETIRED so the
     # label can never disagree with the rest of the deck.
@@ -207,6 +217,25 @@ def _engine_version():
             return "X-PERPS %s (LIVE) · SPOT %s (retired)" % (perp, spot)
         return "SPOT %s + PERP %s" % (spot, perp)
     return perp or spot or "unknown"
+
+
+def _engine_header():
+    """One compact line for the sticky header.
+
+    The header is the only consumer of version/venue/mode, and composing the full
+    strings there produced 179 chars / 1256px — it wrapped into four rows and pushed
+    the page down. Two things in it were also wrong rather than merely long:
+      * "X-PERPS" appeared twice (inside the version string AND inside the venue),
+      * the RETIRED spot engine's version was shown next to the live one, reading as
+        if two engines were current.
+    So the header gets a short line naming only the live engine. Nothing is lost:
+    `version`/`venue`/`mode` stay in the payload for the boot text and the dossier
+    payload, and the spot version is preserved in spot_book.version and printed in
+    the retired record panel.
+    """
+    live = _VERSIONS["perp"] or _VERSIONS["spot"] or "unknown"
+    mode = "LIVE · TWO-WAY" if SPOT_BOOK_RETIRED else "LIVE · TWO-WAY + SPOT"
+    return "%s · OKX EUROPE (EEA) X-PERPS · %s" % (live, mode)
 
 # Launch bankroll (09-28) — the anchor for the all-time realized return %.
 # Realized trading P&L is expressed against THIS, not against a moving equity
@@ -244,6 +273,9 @@ def _perp_capital_at(iso_ts):
 
 ENGINE = {
     "version": _engine_version(),
+    # Compact one-liner for the sticky header — see _engine_header() for why the
+    # header must not compose version + venue + mode itself.
+    "header": _engine_header(),
     # 10-15: the operator consolidated the account into the two-way book — EUR was
     # converted to USDC and the spot engine's timer was DISABLED (not deleted; the
     # code and its 132-trade record stay). So: one live book, X-Perps only.
@@ -255,6 +287,11 @@ ENGINE = {
     "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
     "spot_book": {
         "status": "RETIRED 2026-10-15" if SPOT_BOOK_RETIRED else "ACTIVE",
+        # Parsed from source so the retired record still names the engine that
+        # produced it. This is where the spot version lives now that the header
+        # names only the LIVE engine — removing it from the header must not mean
+        # losing it from the deck.
+        "version": _VERSIONS["spot"],
         "why": ("Capital consolidated into the X-Perp book at operator direction. The spot "
                 "EUR book was long-only (no way to profit from a decline) and carried ~0.25% "
                 "round-trip fees vs the perp book's ~0.07%. Engine code and full history "
