@@ -30,7 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.4-perp"
+ENGINE_VERSION = "v4.5-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -685,7 +685,17 @@ def decide():
 def status():
     meta = load_meta()
     eq = usdc_equity()
+    # Whole-account truth, computed ONCE here so both the status CLI and the
+    # terminal snapshot report the same numbers (the deck has no credentials and
+    # can only read what this dict publishes). eur_float matters because the spot
+    # book is retired — its EUR is a leftover float, not a live bankroll, and the
+    # deck used to mistake the frozen spot log value for current cash.
+    _bal = J.balances()
+    _eur = float((_bal.get("EUR") or {}).get("avail") or 0)
+    _tot_usd = round(sum(float(v.get("eq_usd") or 0) for v in _bal.values()), 2)
     out = {"engine": ENGINE_VERSION, "usdc_equity": round(eq, 2),
+           "eur_float": round(_eur, 4), "account_total_usd": _tot_usd,
+           "collateral_ccy": J.PERP_COLLATERAL_CCY,   # defined in okx_jev (imported as J), NOT here
            "halted": halted(), "dry": DRY,
            "positions": [], "algos_pending": 0}
     for inst, m in meta.items():
@@ -713,16 +723,14 @@ def status():
         pass
     # snapshot for the observation terminal (container has no creds; reads this)
     try:
-        # Publish the WHOLE account, not just this book's collateral. Without the
-        # EUR float the deck had to read cash from the retired spot engine's last
-        # logged jev event, which froze at the pre-conversion 100.73 EUR and then
-        # got narrated as current account state. Truth beats convenience here.
-        _bal = J.balances()
-        _eur = float((_bal.get("EUR") or {}).get("avail") or 0)
-        _tot_usd = round(sum(float(v.get("eq_usd") or 0) for v in _bal.values()), 2)
-        snap = {"engine": ENGINE_VERSION, "usdc_equity": out["usdc_equity"],
-                "eur_float": round(_eur, 4), "account_total_usd": _tot_usd,
-                "collateral_ccy": J.PERP_COLLATERAL_CCY,   # defined in okx_jev (imported as J), NOT here
+        # Publish the WHOLE account, not just this book's collateral — copied from
+        # `out` so the CLI and the deck can never disagree, and so we make one
+        # balances() call rather than two. Without the EUR float the deck read
+        # cash from the retired spot engine's last logged jev event, frozen at the
+        # pre-conversion 100.73 EUR, and narrated it as current account state.
+        snap = {"engine": out["engine"], "usdc_equity": out["usdc_equity"],
+                "eur_float": out["eur_float"], "account_total_usd": out["account_total_usd"],
+                "collateral_ccy": out["collateral_ccy"],
                 "halted": out["halted"], "dry": DRY,
                 "n_positions": len(out["positions"]),
                 "algos_pending": out["algos_pending"], "ts": now_iso(),
