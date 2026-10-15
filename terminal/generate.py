@@ -52,6 +52,82 @@ CONTACT_LINE = os.environ.get(
     "TERMINAL_CONTACT_LINE",
     "OBEKT AUTONOMOUS TRADING PLATFORM  //  BUILT BY OBEKT AI WORKS -> https://obekt.com")
 
+def _choice_base(choice):
+    """Base symbol from a Jev choice token. Spot emits buy_<base>; the two-way
+    perp book emits long_<base> / short_<base>. Accepting only buy_ silently
+    empties every panel that resolves the chosen instrument."""
+    m = re.match(r"(?:buy|long|short)_(.+)", str(choice or ""))
+    return m.group(1) if m else None
+
+
+def _choice_side(choice):
+    s = str(choice or "")
+    if s.startswith("short_"):
+        return "short"
+    if s.startswith("long_"):
+        return "long"
+    return "long" if s.startswith("buy_") else None
+
+
+def _p_directional(probs, base):
+    """The model's probability for TAKING the directional trade on `base`.
+    Spot has one entry key (buy_<base>); the perp book has two (long_/short_) and
+    the engine picks the better side — mirror that choice so the deck shows the
+    number that actually drove the decision, not an arbitrary one."""
+    if not base:
+        return None
+    pl, psh = probs.get("long_%s" % base), probs.get("short_%s" % base)
+    pb = probs.get("buy_%s" % base)
+    cands = [v for v in (pb, pl, psh) if v is not None]
+    return max(cands) if cands else None
+
+
+def _live_params():
+    """Every number the ARCHITECTURE panel quotes, parsed from the LIVE engine's
+    source. This panel was the single worst offender for drift: it hardcoded all
+    eight steps describing the retired spot engine — "MARGIN ≥0.25", "IOC CHASE
+    FALLBACK" (deleted in v3.8), "STAKE = ALL FREE EUR", cooldowns 15/30, stale
+    exit 90m — while the live book ran entirely different values. Parse, never
+    transcribe."""
+    fname = "okx_perp.py" if SPOT_BOOK_RETIRED else "okx_jev.py"
+    defaults = {"MARGIN_BAR": 0.30, "CONF_BAR": 0.50, "CONF_FLOOR": 0.40,
+                "NOUL_BAR": 0.45, "MIN_VOL24H_USD": 300000, "MIN_TOP5_DEPTH_USD": 1000,
+                "MAX_SPREAD_PCT": 0.10, "MIN_DAY_RANGE_PCT": 1.5, "EDGE_MULT": 4.0,
+                "MIN_TARGET_PCT": 0.6, "MAX_TARGET_PCT": 2.0, "SL_COST_MULT": 1.75,
+                "TIME_STOP_MIN": 30, "STALE_EXIT_MIN": 60, "COOLDOWN_MIN": 20,
+                "WIN_COOLDOWN_MIN": 10, "DAILY_LOSS_PCT": 8.0, "MAX_NOTIONAL_FRAC": 0.98,
+                "PERP_LEV": "1", "MIN_VOL30_PCT": 0.35, "MAX_JEV_PAIRS": 4}
+    try:
+        src = open(os.path.join(BASE, fname)).read(40960)
+    except Exception:
+        return dict(defaults, source=fname, retired_book=SPOT_BOOK_RETIRED,
+                    has_prompt_budget=False)
+    out = dict(defaults)
+    for name, dflt in defaults.items():
+        m = re.search(r'^%s\s*=\s*"?([0-9_.]+)"?' % name, src, re.M)
+        if not m:
+            continue
+        raw = m.group(1).replace("_", "")
+        try:
+            out[name] = float(raw) if "." in raw else int(raw)
+        except ValueError:
+            out[name] = raw
+    out["source"] = fname
+    out["retired_book"] = SPOT_BOOK_RETIRED
+    # Prompt-budget machinery only exists in whichever engine actually defines it.
+    # The live X-Perp engine has NO trim loop (its prompt is small: <=4 contracts),
+    # so a panel claiming "the engine hard-caps input" would describe code that
+    # isn't running. Report presence explicitly instead of implying it.
+    for pname in ("MAX_STATE_CHARS", "MAX_JEV_INPUT_TOKENS", "CHARS_PER_TOKEN"):
+        m = re.search(r'^%s\s*=\s*([0-9_.]+)' % pname, src, re.M)
+        try:
+            out[pname] = float(m.group(1).replace("_", "")) if m else None
+        except Exception:
+            out[pname] = None
+    out["has_prompt_budget"] = out.get("MAX_STATE_CHARS") is not None
+    return out
+
+
 def _engine_bars(fname="okx_jev.py"):
     """Parse gate thresholds from a specific engine's source so the deck's
     DECISION GATES panel can never drift from what that engine enforces.
@@ -227,8 +303,137 @@ def parse_ts(s):
         return None
 
 
-def build_round_trips(events):
-    """Pair open -> close/close_detected per instrument, chronologically."""
+def read_perp_log():
+    """The LIVE book's raw event stream (perp_log.jsonl)."""
+    events = []
+    try:
+        with open(os.path.join(BASE, "perp_log.jsonl"), errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+    except FileNotFoundError:
+        pass
+    return events
+
+
+def _chosen_funding(e, base):
+    """Funding rate for the chosen perp contract. The perp engine logs funding per
+    contract inside `pairs`, not as a top-level market field like spot did, so the
+    dossier's funding box would otherwise be empty for every live trade."""
+    if not base:
+        return None
+    for p in (e.get("pairs") or []):
+        if str(p.get("base", "")).lower() == base:
+            v = p.get("funding_bps")
+            if v is not None:
+                return v
+    return None
+
+
+def normalize_perp_events(pevents):
+    """Adapt the perp engine's flat event vocabulary onto the generic shapes the
+    panel builders already consume (open/close/close_detected/jev/no_trade/
+    universe_scan/quality_gate_reject/entry_unfilled), so ONE set of tested
+    builders serves both books instead of a second copy that would drift.
+
+    Monetary fields carry the LIVE book's currency (USD), not EUR — the key names
+    are internal identifiers; `ccy` on the returned dicts tells the UI which
+    symbol to print. Never reuse the spot builders' EUR assumption here.
+
+    perp_jev is flat (choice/conf/margin/noul/probabilities/pairs at top level)
+    while spot nests them under answers.best_action + state.pairs. Synthesising
+    the nested shape is what lets build_scatter/build_jev_history work unchanged.
+    """
+    out = []
+    for e in pevents:
+        ev = e.get("event")
+        if ev == "perp_open":
+            out.append(dict(e, event="open", ccy="USD",
+                            stake=e.get("notional_usd"),
+                            qty=e.get("contracts"),
+                            entry_type="maker"))
+        elif ev == "perp_close":
+            out.append(dict(e, event="close", ccy="USD",
+                            stake_eur=e.get("notional_usd"),
+                            reason=e.get("reason") or "exit"))
+        elif ev == "perp_close_detected":
+            out.append(dict(e, event="close_detected", ccy="USD",
+                            stake_eur=e.get("notional_usd"),
+                            reason=e.get("note") or "server OCO"))
+        elif ev == "perp_jev":
+            probs = e.get("probabilities") or {}
+            choice = e.get("choice") or "no_trade"
+            side = e.get("chosen_side")
+            # The generic builders resolve a chosen instrument by (a) looking the
+            # choice string up in `probabilities` and (b) regex-extracting the base
+            # symbol from it. Perp's real probability keys are long_<base> /
+            # short_<base>, so pass the REAL key through — inventing a synthetic
+            # buy_<base> made the probabilities lookup return None and silently
+            # emptied the scatter panel. The extraction regexes accept all three
+            # prefixes (buy_/long_/short_).
+            base = None
+            inst = e.get("chosen_inst")
+            if inst:
+                base = inst.split("-")[0].lower()
+            pairs = {}
+            for p in (e.get("pairs") or []):
+                pk = p.get("inst")
+                if pk:
+                    pairs[pk] = p
+            # direction-specific noul: longs use the rise prob, shorts the fall prob
+            noul_key = "noul_up" if side == "long" else "noul_dn"
+            noul_val = e.get("noul")
+            if base:
+                for p in (e.get("pairs") or []):
+                    if p.get("base", "").lower() == base and p.get(noul_key) is not None:
+                        noul_val = p.get(noul_key)
+                        break
+            out.append(dict(e, event="jev", ccy="USD",
+                            answers={"best_action": {
+                                "choice": choice,
+                                "confidence": e.get("conf"),
+                                "probabilities": probs,
+                            }, **({"p_up_%s" % base: {"noul": noul_val}} if base else {})},
+                            state={"pairs": pairs,
+                                   "cash_eur": e.get("collateral_usdc"),
+                                   "stake_eur": e.get("budget_usd"),
+                                   # funding for the CHOSEN contract, so the dossier's
+                                   # funding field is populated for perp trades too
+                                   "market_funding_bps": _chosen_funding(e, base)},
+                            usage={"input_tokens": e.get("input_tokens"),
+                                   "output_tokens": e.get("output_tokens")},
+                            prompt_stats={"n_pairs": e.get("n_pairs")},
+                            _perp_side=side))
+        elif ev == "perp_no_trade":
+            out.append(dict(e, event="no_trade", ccy="USD", why=e.get("why")))
+        elif ev == "perp_universe":
+            out.append(dict(e, event="universe_scan", ccy="USD",
+                            n_eur=e.get("n_perps"),
+                            n_candidates=e.get("n_cands"),
+                            selected=e.get("selected")))
+        elif ev == "perp_gate_reject":
+            out.append(dict(e, event="quality_gate_reject", ccy="USD",
+                            fails=[e.get("why") or "gate"]))
+        elif ev == "perp_entry_unfilled":
+            out.append(dict(e, event="entry_unfilled", ccy="USD"))
+        elif ev == "perp_cooldown_skip":
+            out.append(dict(e, event="cooldown_skip", ccy="USD", min=e.get("mins")))
+    return out
+
+
+def build_round_trips(events, ccy="EUR", capital_base=None):
+    """Pair open -> close/close_detected per instrument, chronologically.
+
+    ccy/capital_base let the SAME logic serve both books: spot amounts are EUR
+    against LAUNCH_EUR, live perp amounts are USD against PERP_CAPITAL_USD. The
+    `*_eur` key names are historical identifiers — read them as "book currency".
+    """
+    if capital_base is None:
+        capital_base = LAUNCH_EUR
     open_by_inst = {}
     trips = []
     for e in events:
@@ -244,9 +449,19 @@ def build_round_trips(events):
                 continue
             stake = (o or {}).get("stake") or 0
             fee_close = abs(float(e.get("realized_fee") or 0))
-            # entry fee estimate from entry type (maker 0.1% / taker 0.2%)
+            # ENTRY FEE — denomination differs by book, and getting this wrong
+            # inflates costs by ~10x:
+            #   spot  : open realized_fee is in BASE TOKEN units (e.g. -0.34 CT),
+            #           NOT EUR. Unusable as a quote amount -> use the rate
+            #           estimate (maker 0.1% / taker 0.2%).
+            #   perp  : fees are quoted in the settle ccy (USDC) on both legs, so
+            #           the logged value IS the true USD cost. Use it.
             et = (o or {}).get("entry_type", "")
-            fee_open = stake * (0.002 if "taker" in str(et) else 0.001)
+            fee_open_logged = (o or {}).get("realized_fee")
+            if ccy == "USD" and fee_open_logged is not None:
+                fee_open = abs(float(fee_open_logged or 0))
+            else:
+                fee_open = stake * (0.002 if "taker" in str(et) else 0.001)
             gross = stake * upc / 100.0
             fees = fee_open + fee_close
             ts_close = parse_ts(e.get("ts", ""))
@@ -264,7 +479,10 @@ def build_round_trips(events):
                 "entry_px": (o or {}).get("fill_px"),
                 "exit_px": e.get("fill_px"),
                 "stake_eur": round(stake, 2),
+                "side": (o or {}).get("side"),
                 "upc": upc,
+                "ccy": ccy,
+                "capital_base": capital_base,
                 "net_pct": round(100 * (gross - fees) / stake, 3) if stake else None,
                 "gross_eur": round(gross, 2),
                 "fees_eur": round(fees, 3),
@@ -282,7 +500,17 @@ def build_round_trips(events):
     return trips
 
 
-def build_stats(trips, events):
+def build_stats(trips, events, ccy="EUR", capital_base=None, capital_base_fn=None):
+    """Aggregate a book's closed trades. ccy/capital_base select the book:
+    spot = EUR vs LAUNCH_EUR, live perp = USD vs PERP_CAPITAL_USD. The `*_eur`
+    key names are historical identifiers, not a currency claim — `ccy` says which
+    symbol the UI must print, so the perp book never renders '$131' as '€131'.
+
+    capital_base_fn(ts) -> base at that time. Needed whenever capital was added
+    mid-history: dividing early trades by today's larger base understates them.
+    """
+    if capital_base is None:
+        capital_base = LAUNCH_EUR
     wins = [t for t in trips if t["net_eur"] > 0]
     losses = [t for t in trips if t["net_eur"] <= 0]
     gross_win = sum(t["net_eur"] for t in wins)
@@ -312,7 +540,8 @@ def build_stats(trips, events):
     for t in chrono:
         run = round(run + t["net_eur"], 2)
         cum.append(run)
-        cum_pct.append(round(100 * run / LAUNCH_EUR, 3) if LAUNCH_EUR else 0.0)
+        base_at = capital_base_fn(t["close_ts"]) if capital_base_fn else capital_base
+        cum_pct.append(round(100 * run / base_at, 3) if base_at else 0.0)
 
     # PnL per instrument
     per_inst = {}
@@ -389,10 +618,11 @@ def build_stats(trips, events):
         "losses": len(losses),
         "win_rate_pct": round(100 * len(wins) / len(trips), 1) if trips else None,
         "net_all_eur": round(sum(t["net_eur"] for t in trips), 2),
-        # v4: cumulative realized P&L as a PERCENT of LAUNCH capital (honest
-        # account return; the old sum-of-per-trade-stake-% was wrong — see the
-        # cum_pnl_pct comment above).
-        "net_all_pct": round(100 * sum(t["net_eur"] for t in trips) / LAUNCH_EUR, 2) if LAUNCH_EUR else None,
+        # realized P&L as a PERCENT of the book's own CAPITAL BASE (never a sum of
+        # per-trade %-of-own-stake: that conflates an $8 and a $131 position).
+        "net_all_pct": round(100 * sum(t["net_eur"] for t in trips) / capital_base, 2) if capital_base else None,
+        "ccy": ccy,
+        "capital_base": capital_base,
         "fees_all_eur": round(sum(t["fees_eur"] for t in trips), 2),
         "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else None,
         "avg_win_eur": round(gross_win / len(wins), 2) if wins else None,
@@ -429,7 +659,7 @@ def build_scatter(events):
         p_c = probs.get(choice)
         if p_c is None or p_no is None:
             continue
-        m = re.match(r"buy_(.+)", choice)
+        m = re.match(r"(?:buy|long|short)_(.+)", choice)
         if not m:
             continue
         base = m.group(1)
@@ -479,6 +709,7 @@ def build_funnel(events, universe):
     tok_in = tok_out = state_chars = 0
     tok_today = 0
     sum_n_eur = sum_n_cand = sum_jev_pairs = 0
+    last_scan_n = None      # most recent per-cycle universe size (see below)
     today = _now().strftime("%Y-%m-%d")
     first_ts = None
     cycle_starts = []
@@ -493,6 +724,10 @@ def build_funnel(events, universe):
         if ev == "universe_scan":
             sum_n_eur += e.get("n_eur") or 0
             sum_n_cand += e.get("n_candidates") or 0
+            # remember the most recent per-cycle universe size (perp logs n_perps
+            # via the normalizer's n_eur alias) so the funnel can say "sweeps N
+            # contracts/pairs every cycle" for the LIVE book.
+            last_scan_n = e.get("n_eur") or last_scan_n
         if ev == "jev":
             ans = (e.get("answers") or {}).get("best_action") or {}
             if ans.get("choice") and ans.get("choice") != "no_trade":
@@ -519,6 +754,9 @@ def build_funnel(events, universe):
     uptime_h = round((_now() - first_dt).total_seconds() / 3600, 1) if first_dt else None
     return {
         "eur_pairs": universe.get("n_eur_pairs"),
+        # per-cycle universe size of the LIVE book (perp_universe.json has no
+        # count field, so it comes from the scan events themselves)
+        "perps_scanned": last_scan_n,
         "cycles": len(cycle_starts),
         "cycle_median_s": int(cycle_median),
         "last_cycle_ts": cycle_starts[-1].isoformat() if cycle_starts else None,
@@ -578,31 +816,54 @@ def build_equity(events, trips):
     }
 
 
+def _sym(e):
+    """Currency symbol for an event's book. The retired spot book logged EUR; the
+    live X-Perp book settles in USD. Formatters must never assume EUR — printing
+    '$131' as '€131' is the same class of lie as a wrong P&L sign."""
+    return "$" if e.get("ccy") == "USD" else "€"
+
+
+def _side(e):
+    """Direction label for two-way books; empty for the long-only spot book."""
+    s = (e.get("side") or "").lower()
+    if s == "short":
+        return "SHORT "
+    if s == "long":
+        return "LONG "
+    return ""
+
+
 TAPE_FMT = {
-    "open": lambda e: ("OPEN", "▲ OPEN %s  qty %s @ %s  stake €%s  conf %s margin %s noul %s [%s]" % (
-        e.get("inst"), e.get("qty"), e.get("fill_px"), e.get("stake"),
+    "open": lambda e: ("OPEN", "%sOPEN %s  qty %s @ %s  notional %s%s  conf %s margin %s noul %s [%s]" % (
+        "▲ " if (e.get("side") or "").lower() != "short" else "▼ ",
+        e.get("inst"), e.get("qty"), e.get("fill_px"), _sym(e), e.get("stake"),
         e.get("conf"), e.get("margin"), e.get("noul"), e.get("entry_type", "-"))),
-    "close": lambda e: ("CLOSE", "▼ CLOSE %s  %+.2f%%  €%s  after %sm — %s" % (
-        e.get("inst"), e.get("upc", 0),
+    "close": lambda e: ("CLOSE", "▼ CLOSE %s %s %+.2f%%  %s%s  after %sm — %s" % (
+        e.get("inst"), _side(e), e.get("upc", 0), _sym(e),
         round((e.get("stake_eur") or 0), 2) if e.get("stake_eur") else "-",
         e.get("age_min", "?"), e.get("reason", ""))),
-    "close_detected": lambda e: ("CLOSE", "▼ EXIT %s  %+.2f%% — server-side OCO fired" % (
-        e.get("inst"), e.get("upc", 0))),
+    "close_detected": lambda e: ("CLOSE", "▼ EXIT %s %s %+.2f%% — server-side OCO fired" % (
+        e.get("inst"), _side(e), e.get("upc", 0))),
     "trail_armed": lambda e: ("TRAIL", "◈ TRAIL ARMED %s  hwm +%.2f%%  callback %.3f%%  active @ %s" % (
         e.get("inst"), e.get("hwm_pct", 0), 100 * (e.get("callBackRatio") or 0), e.get("activePx"))),
     "jev": None,  # special-cased
     "no_trade": lambda e: ("JEV", "JEV → NO-TRADE (%s)" % e.get("why", "")),
     "quality_gate_reject": lambda e: ("GATE", "GATE REJECT %s: %s" % (
         e.get("inst"), "; ".join(e.get("fails", [])))),
-    "universe_scan": lambda e: ("SCAN", "UNIVERSE SCAN %s EUR pairs → %s candidates → top: %s" % (
-        e.get("n_eur"), e.get("n_candidates"), ",".join(e.get("selected", [])[:5]))),
-    "universe_depth_reject": lambda e: ("GATE", "DEPTH REJECT %s — top5 book €%s < floor" % (
-        e.get("inst"), e.get("depth_eur"))),
-    "cooldown_skip": lambda e: ("RISK", "COOLDOWN %s — re-entry locked %sm" % (
-        e.get("inst"), e.get("min"))),
+    "universe_scan": lambda e: ("SCAN", "UNIVERSE SCAN %s %s → %s candidates → top: %s" % (
+        e.get("n_eur"), ("X-PERP CONTRACTS" if e.get("ccy") == "USD" else "EUR PAIRS"),
+        e.get("n_candidates"), ",".join(str(x)[:24] for x in (e.get("selected") or [])[:5]))),
+    "universe_depth_reject": lambda e: ("GATE", "DEPTH REJECT %s — top5 book %s%s < floor" % (
+        e.get("inst"), _sym(e), e.get("depth_eur"))),
+    # cooldown_skip has TWO field shapes in the spot log (305 events use
+    # left_min+after, 75 use min) — the perp normalizer emits `min`. Accept all
+    # three or the majority case renders "locked undefinedm".
+    "cooldown_skip": lambda e: ("RISK", "COOLDOWN %s — re-entry locked %sm after %s" % (
+        e.get("inst"), e.get("left_min") if e.get("left_min") is not None else e.get("min"),
+        e.get("after") or "exit")),
     "entry_unfilled": lambda e: ("FILL", "MAKER ENTRY UNFILLED %s — cancelled, no chase" % e.get("inst")),
-    "day_roll": lambda e: ("DAY", "═ DAY ROLL %s — opening equity €%s" % (
-        e.get("day"), e.get("start_equity_eur"))),
+    "day_roll": lambda e: ("DAY", "═ DAY ROLL %s — opening equity %s%s" % (
+        e.get("day"), _sym(e), e.get("start_equity_eur"))),
     "daily_breaker": lambda e: ("ALERT", "‼ DAILY LOSS BREAKER TRIPPED — entries halted until UTC midnight"),
     "algo_fallback": lambda e: ("RISK", "OCO ATTACH FALLBACK %s — standalone stop placed" % e.get("inst")),
     "algo_fallback_err": lambda e: ("ALERT", "OCO ATTACH FAILED %s — poll stop-loss owns the position" % e.get("inst")),
@@ -741,11 +1002,20 @@ def fetch_trade_candles(inst, ts_open, ts_close, bar="5m"):
 DOSSIER_CANDLE_BACKFILL = 8  # cached dossiers get their chart backfilled, capped per run
 
 
+# Bump when the dossier's CONTENT is recomputed differently; a cached dossier
+# marked complete=True is otherwise served forever even after a fix. That is
+# exactly what stranded the perp dossiers at timeline=0 once build_dossier
+# started reading the live log — the cache had the pre-fix empty result.
+DOSSIER_SCHEMA = 2
+
+
 def build_dossier(trip, events, jev_events, debrief_budget=0, candle_budget=0):
     """Full decision replay for one closed trade. Cached: closed trades are immutable."""
     os.makedirs(DOSSIER_DIR, exist_ok=True)
     path = os.path.join(DOSSIER_DIR, trip["tid"] + ".json")
     cached = _load_json(path)
+    if cached and cached.get("schema") != DOSSIER_SCHEMA:
+        cached = None
     if cached and cached.get("complete"):
         used_d = 0
         if (not cached.get("debrief") and debrief_budget > 0
@@ -849,6 +1119,7 @@ def build_dossier(trip, events, jev_events, debrief_budget=0, candle_budget=0):
     # news/social/macro context that was in the prompt
     dossier = {
         "tid": trip["tid"],
+        "schema": DOSSIER_SCHEMA,
         "complete": bool(trip.get("close_ts")),
         "trade": trip,
         "decision": {
@@ -910,7 +1181,11 @@ def build_jev_latest(events):
         noul = (ans.get("p_up_%s" % base) or {}).get("noul")
         rows.append({
             "inst": inst,
-            "p_buy": probs.get("buy_%s" % base),
+            "p_buy": _p_directional(probs, base),
+            "p_long": probs.get("long_%s" % base),
+            "p_short": probs.get("short_%s" % base),
+            "two_way": bool(probs.get("long_%s" % base) is not None
+                            or probs.get("short_%s" % base) is not None),
             "noul": noul,
             "chg_30min_pct": p.get("chg_30min_pct"),
             "chg_4h_pct": p.get("chg_4h_pct"),
@@ -926,19 +1201,22 @@ def build_jev_latest(events):
     margin = round(p_choice - p_no, 3) if (p_choice is not None and p_no is not None) else None
     chosen_inst = None
     chosen_noul = None
+    chosen_side = latest.get("_perp_side")
     if choice != "no_trade":
-        m = re.match(r"buy_(.+)", choice)
-        if m:
+        base = _choice_base(choice)
+        if base:
             for inst in pairs:
-                if inst.split("-")[0].lower() == m.group(1):
+                if inst.split("-")[0].lower() == base:
                     chosen_inst = inst
-                    chosen_noul = (ans.get("p_up_%s" % m.group(1)) or {}).get("noul")
+                    chosen_noul = (ans.get("p_up_%s" % base) or {}).get("noul")
+                    break
     # engine bars: PARSED FROM ENGINE SOURCE (single source of truth — these
     # were hardcoded 0.25/0.45 and drifted from the engine, which actually runs
     # MARGIN_BAR=0.30 + a CONJUNCTIVE CONF_FLOOR since v3.8:
     #   edge_ok = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
     #   fire    = edge_ok and noul >= NOUL_BAR
-    MBAR, CBAR, CFLOOR, NBAR = _engine_bars()
+    MBAR, CBAR, CFLOOR, NBAR = _engine_bars(
+        "okx_perp.py" if latest.get("ccy") == "USD" else "okx_jev.py")
     conf = ba.get("confidence")
     if chosen_inst:
         bar_margin = (margin is not None and margin >= MBAR)
@@ -962,8 +1240,8 @@ def build_jev_latest(events):
             if e.get("event") == "open" and e.get("inst") == chosen_inst:
                 action = {"type": "opened", "ts": e.get("ts"), "fill_px": e.get("fill_px"),
                           "stake": e.get("stake"), "entry_type": e.get("entry_type"),
-                          "text": "ORDER SENT — %s filled @ %s (€%s, %s entry)" % (
-                              e.get("inst"), e.get("fill_px"), e.get("stake"), e.get("entry_type"))}
+                          "text": "ORDER SENT — %s filled @ %s (%s%s, %s entry)" % (
+                              e.get("inst"), e.get("fill_px"), _sym(e), e.get("stake"), e.get("entry_type"))}
                 break
             if e.get("event") == "no_trade":
                 why = e.get("why", "")
@@ -976,6 +1254,8 @@ def build_jev_latest(events):
         "ts": latest.get("ts"),
         "choice": choice,
         "chosen_inst": chosen_inst,
+        "chosen_side": chosen_side or _choice_side(choice),
+        "ccy": latest.get("ccy") or "EUR",
         "confidence": conf,
         "margin": margin,
         "noul": chosen_noul,
@@ -1007,7 +1287,7 @@ def build_jev_history(events, limit=40):
         p_c = probs.get(choice)
         ans = e.get("answers") or {}
         noul = None
-        m = re.match(r"buy_(.+)", choice or "")
+        m = re.match(r"(?:buy|long|short)_(.+)", choice or "")
         if m:
             noul = (ans.get("p_up_%s" % m.group(1)) or {}).get("noul")
         out.append({
@@ -1277,54 +1557,30 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "model": LLM_MODEL, "generated": _now().isoformat()}
 
 
-def build_perp():
+def build_perp(shared_trips=None):
     """v4: two-way X-Perp book (separate engine, USDC collateral, LONG+SHORT).
     Reads perp_log.jsonl / perp_positions.json / perp_universe.json from BASE.
     Returns a compact block for a dedicated deck panel; None-safe if the perp
-    engine has never run."""
-    plog_path = os.path.join(BASE, "perp_log.jsonl")
-    events = []
-    try:
-        with open(plog_path, errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        events.append(json.loads(line))
-                    except Exception:
-                        pass
-    except FileNotFoundError:
-        return None
+    engine has never run.
+
+    `shared_trips` is the perp round-trip list already built by the shared
+    matcher in build(). Passing it in avoids a SECOND independent open/close
+    pairing of the same log — two matchers is how the panels end up disagreeing
+    with each other, and it already harboured the sum-of-stake-% bug once.
+    """
+    events = read_perp_log()
     if not events:
         return None
 
-    # round trips: perp_open -> perp_close / perp_close_detected
-    open_by = {}
-    trips = []
-    for e in events:
-        ev = e.get("event")
-        inst = e.get("inst")
-        if ev == "perp_open":
-            open_by.setdefault(inst, []).append(e)
-        elif ev in ("perp_close", "perp_close_detected"):
-            stack = open_by.get(inst)
-            o = stack.pop() if stack else {}
-            upc = e.get("upc")
-            if upc is None:
-                continue
-            notional = float((o or {}).get("notional_usd") or 0)
-            fee = abs(float(e.get("realized_fee") or 0))
-            entry_fee = abs(float((o or {}).get("realized_fee") or 0))
-            net_usd = notional * upc / 100.0 - fee - entry_fee
-            trips.append({
-                "inst": inst, "side": (o or {}).get("side"),
-                "open_ts": (o or {}).get("ts"), "close_ts": e.get("ts"),
-                "upc": upc, "notional_usd": round(notional, 2),
-                "net_usd": round(net_usd, 2),
-                "net_pct": round(100 * net_usd / notional, 3) if notional else None,
-                "reason": e.get("reason") or ("server OCO" if ev == "perp_close_detected" else "exit"),
-                "exit_kind": "server-oco" if ev == "perp_close_detected" else "managed",
-            })
+    if shared_trips is not None:
+        trips = shared_trips
+    else:
+        trips = build_round_trips(normalize_perp_events(events), "USD", PERP_CAPITAL_USD)
+    # `net_usd` is the canonical key for this panel; the shared matcher names the
+    # same value net_eur (a historical identifier meaning "book currency").
+    for t in trips:
+        t["net_usd"] = t.get("net_usd", t.get("net_eur"))
+        t["notional_usd"] = t.get("notional_usd", t.get("stake_eur"))
     longs = [t for t in trips if t.get("side") == "long"]
     shorts = [t for t in trips if t.get("side") == "short"]
     wins = [t for t in trips if (t.get("net_usd") or 0) > 0]
@@ -1455,9 +1711,21 @@ def build_perp():
 
 def build():
     t0 = time.time()
+    # TWO event streams. `events` = the retired spot EUR book (frozen history).
+    # `perp_events` = the LIVE X-Perp book, normalized onto the same generic
+    # event shapes so one set of tested builders serves both. Every non-retired
+    # panel must read the LIVE book: pointing them at the spot log makes the deck
+    # present dead-engine data as current (it did — 15 panels were frozen at the
+    # moment spot was disabled while claiming to be live).
     events = read_log()
-    trips = build_round_trips(events)
-    jev_events = [e for e in events if e.get("event") == "jev"]
+    perp_raw = read_perp_log()
+    perp_events = normalize_perp_events(perp_raw)
+    live_events = perp_events if (SPOT_BOOK_RETIRED and perp_events) else events
+    live_ccy = "USD" if (SPOT_BOOK_RETIRED and perp_events) else "EUR"
+    live_base = PERP_CAPITAL_USD if live_ccy == "USD" else LAUNCH_EUR
+
+    trips = build_round_trips(live_events, live_ccy, live_base)
+    jev_events = [e for e in live_events if e.get("event") == "jev"]
     # dossiers for the trades shown in the ledger (cached; only new ones rebuild).
     # Debriefs cost one LLM call each — capped per build so 40 cached dossiers backfill
     # gradually without hammering the relay; new closed trades get one immediately.
@@ -1465,21 +1733,23 @@ def build():
     candle_budget = DOSSIER_CANDLE_BACKFILL
     for t in trips[-40:][::-1]:
         try:
-            dos, used_d, used_c = build_dossier(t, events, jev_events, debrief_budget, candle_budget)
+            dos, used_d, used_c = build_dossier(t, live_events, jev_events, debrief_budget, candle_budget)
             debrief_budget -= used_d
             candle_budget -= used_c
             if dos.get("debrief"):
                 t["debrief"] = dos["debrief"]
         except Exception as ex:
             print("dossier failed %s: %s" % (t.get("tid"), ex), file=sys.stderr)
-    stats = build_stats(trips, events)
-    equity = build_equity(events, trips)
-    jev_latest = build_jev_latest(events)
-    jev_hist = build_jev_history(events)
-    tape = build_tape(events)
-    universe = _load_json(os.path.join(BASE, "universe.json"), {}) or {}
-    funnel = build_funnel(events, universe)
-    scatter = build_scatter(events)
+    stats = build_stats(trips, live_events, live_ccy, live_base,
+                        capital_base_fn=(_perp_capital_at if live_ccy == "USD" else None))
+    equity = build_equity(live_events, trips)
+    jev_latest = build_jev_latest(live_events)
+    jev_hist = build_jev_history(live_events)
+    tape = build_tape(live_events)
+    # the LIVE book's universe cache (perp_universe.json when spot is retired)
+    universe = _load_json(os.path.join(BASE, "perp_universe.json" if live_ccy == "USD" else "universe.json"), {}) or {}
+    funnel = build_funnel(live_events, universe)
+    scatter = build_scatter(live_events)
     social = _load_json(os.path.join(BASE, "social.json"), {}) or {}
     catalyst = _load_json(os.path.join(BASE, "catalyst.json"), {}) or {}
     risk = _load_json(os.path.join(BASE, "risk_state.json"), {}) or {}
@@ -1489,17 +1759,30 @@ def build():
     tickers, px_map = fetch_tickers(extra_insts=positions_raw_keys)
     positions = build_positions(positions_raw, px_map)
 
-    perp = build_perp()
+    # Perp panel reuses the SAME round-trip matcher as every other live panel
+    # (live_events are already the normalized perp stream when spot is retired).
+    # Passing the shared list means one open/close pairing for the whole deck.
+    perp = build_perp(shared_trips=(trips if live_ccy == "USD" else None))
 
     news = catalyst.get("catalysts", [])
-    macro = {}
-    if jev_latest:
+    # MACRO: only the retired spot engine injected econ-calendar events into the
+    # model state; the live X-Perp engine does not. Showing spot's last frozen
+    # macro snapshot under a live-looking heading would imply context the live
+    # book never sees, so publish the source explicitly and let the UI say so.
+    macro = {"source": None, "upcoming": [], "surprises": []}
+    if SPOT_BOOK_RETIRED:
+        macro["source"] = "not-injected-into-live-book"
+        macro["note"] = ("The live X-Perp engine injects funding + multi-timeframe momentum only. "
+                         "Econ-calendar / macro events were injected by the retired spot engine, "
+                         "so there is no live macro context to show.")
+    elif jev_latest:
         st = None
         for e in reversed(events):
             if e.get("event") == "jev":
                 st = e.get("state") or {}
                 break
-        macro = {"upcoming": (st or {}).get("macro_events_24h", []),
+        macro = {"source": "spot-engine-jev-state",
+                 "upcoming": (st or {}).get("macro_events_24h", []),
                  "surprises": (st or {}).get("macro_released_3h_surprises", [])}
 
     sentiment = {
@@ -1511,17 +1794,40 @@ def build():
     }
 
     # Retired spot book: publish its FINAL record, derived from the log — not
-    # hardcoded, so it stays true even if someone re-enables the timer.
-    ENGINE["spot_book"]["trades_closed"] = stats.get("trades_all")
-    ENGINE["spot_book"]["net_eur"] = stats.get("net_all_eur")
-    ENGINE["spot_book"]["net_pct"] = stats.get("net_all_pct")
-    ENGINE["spot_book"]["profit_factor"] = stats.get("profit_factor")
+    # The retired spot book's FINAL record must be computed from the SPOT log.
+    # `stats`/`trips` above now describe the LIVE book, so reusing them here would
+    # publish perp numbers as spot's final ledger — a wrong attribution, not a
+    # missing one. Compute the retired record from its own frozen stream, and give
+    # the retired-labelled panels (PERFORMANCE / JEV CALL / universe) their own
+    # frozen blocks so they can never render live perp data under a "SPOT RECORD"
+    # heading.
+    spot_trips = build_round_trips(events, "EUR", LAUNCH_EUR)
+    spot_stats = build_stats(spot_trips, events, "EUR", LAUNCH_EUR) if spot_trips else {}
+    spot_jev_latest = build_jev_latest(events) if SPOT_BOOK_RETIRED else None
+    spot_universe = (_load_json(os.path.join(BASE, "universe.json"), {}) or {}) \
+        if SPOT_BOOK_RETIRED else {}
+    spot_equity = build_equity(events, spot_trips) if SPOT_BOOK_RETIRED else {}
+    ENGINE["spot_book"]["trades_closed"] = spot_stats.get("trades_all")
+    ENGINE["spot_book"]["net_eur"] = spot_stats.get("net_all_eur")
+    ENGINE["spot_book"]["net_pct"] = spot_stats.get("net_all_pct")
+    ENGINE["spot_book"]["profit_factor"] = spot_stats.get("profit_factor")
+    ENGINE["spot_book"]["win_rate_pct"] = spot_stats.get("win_rate_pct")
+    ENGINE["spot_book"]["fees_eur"] = spot_stats.get("fees_all_eur")
 
     desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions, perp)
 
     data = {
         "generated": _now().isoformat(),
-        "last_event_ts": events[-1].get("ts") if events else None,
+        # Heartbeat of the LIVE book. Reading the retired spot log here made the
+        # deck permanently flash "FEED STALE — ENGINE MAY BE PAUSED" while the
+        # live engine was cycling normally: a false alarm that trains visitors
+        # (and me) to ignore real staleness.
+        "last_event_ts": live_events[-1].get("ts") if live_events else (
+            events[-1].get("ts") if events else None),
+        "live_ccy": live_ccy,
+        "live_book": "X-PERPS" if live_ccy == "USD" else "SPOT",
+        # Live engine constants parsed from source for the ARCHITECTURE panel.
+        "params": _live_params(),
         "build_ms": int((time.time() - t0) * 1000),
         "engine": ENGINE,
         "contact": CONTACT_LINE,
@@ -1530,6 +1836,16 @@ def build():
         "live_risk": _perp_cooldowns(),
         "equity": equity,
         "stats": stats,
+        # Retired spot book: its own frozen ledger, explicitly namespaced so no
+        # panel can mistake it for live state.
+        "retired_spot": {
+            "trades": spot_trips[-40:][::-1],
+            "stats": spot_stats,
+            "cum_pnl_pct": spot_stats.get("cum_pnl_pct"),
+            "jev_latest": spot_jev_latest,
+            "universe": spot_universe,
+            "equity": spot_equity,
+        },
         "funnel": funnel,
         "scatter": scatter,
         "positions": positions,

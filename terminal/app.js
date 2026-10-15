@@ -11,8 +11,22 @@
   const sgn = (n, d = 2) => (n > 0 ? "+" : "") + fmt(n, d);
   const cls = (n) => n > 0 ? "pos" : (n < 0 ? "neg" : "dim");
   const eur = (n) => (n === null || n === undefined) ? "—" : "€" + fmt(n, 2);
+  const usd = (n) => (n === null || n === undefined) ? "—" : "$" + fmt(n, 2);
+  // The live book's currency. The retired spot book logged EUR; the live X-Perp
+  // book settles in USD. Panels driven by D.stats/D.trades must print the LIVE
+  // symbol — rendering a $131 perp position as "€131" is a false statement about
+  // the account even though the digits are right.
+  const liveCcy = (D) => (D || {}).live_ccy || "USD";
+  const money = (n, ccy) => (ccy === "USD" ? usd(n) : eur(n));
   const hhmm = (iso) => iso ? iso.slice(11, 16) : "—";
   const mmdd_hhmm = (iso) => iso ? iso.slice(5, 16).replace("T", " ") : "—";
+  // Minutes since an ISO timestamp; null when unparseable so callers can
+  // distinguish "unknown" from "very old" instead of showing NaN.
+  const ageMin = (iso) => {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    return isNaN(t) ? null : Math.round((Date.now() - t) / 60000);
+  };
 
   let CUR_DATA = null;
   const LLM_NAME = "halogen-qwen3.8-flash-next";
@@ -114,12 +128,16 @@
 
   /* ---------- HERO ---------- */
   function openBook(D) {
-    // One-line live summary across BOTH books (spot EUR + X-Perp USDC).
+    // One-line live summary across BOTH books (spot EUR + X-Perp USDC). When spot
+    // is retired its position list is structurally always empty, but guard on the
+    // flag too: a stale positions.json must never render as a live position.
     const rows = [];
-    (D.positions || []).forEach(p => rows.push({
-      book: "SPOT", side: "long", inst: (p.inst || "").replace("-EUR", ""),
-      upc: p.upc, note: "€" + fmt(p.stake_eur)
-    }));
+    if (!spotRetired(D)) {
+      (D.positions || []).forEach(p => rows.push({
+        book: "SPOT", side: "long", inst: (p.inst || "").replace("-EUR", ""),
+        upc: p.upc, note: "€" + fmt(p.stake_eur)
+      }));
+    }
     const P = D.perp || {};
     (P.positions || []).forEach(p => rows.push({
       book: "PERP", side: p.side || "long",
@@ -207,26 +225,40 @@
     return '<div class="kpi"><div class="k">' + esc(k) + '</div><div class="v ' +
       (extraCls || "") + (big ? " big" : "") + '">' + v + "</div></div>";
   }
+  // The spot book is retired: the panels LABELLED as its record must read the
+  // frozen retired_spot block, because D.stats / D.jev_latest / D.universe now
+  // describe the LIVE X-Perp book. Reading the live keys under a "SPOT RECORD"
+  // heading would print perp numbers as spot's final ledger.
+  function spotRetired(D) {
+    return /retired/i.test(String((((D.engine || {}).spot_book) || {}).status || ""));
+  }
+  function perfSource(D) {
+    return spotRetired(D)
+      ? { s: ((D.retired_spot || {}).stats) || {}, e: ((D.retired_spot || {}).equity) || {} }
+      : { s: D.stats || {}, e: D.equity || {} };
+  }
   function renderPerf(D) {
-    const s = D.stats || {}, e = D.equity || {};
+    const src = perfSource(D), s = src.s, e = src.e;
+    // This panel is the retired spot book's final ledger — its currency is EUR.
+    const m = eur;
     const st = s.streak || {};
     const rows =
-      kpi("EQUITY", eur(e.equity_eur), (e.day_pnl_eur || 0) >= 0 ? "green" : "red", true) +
+      kpi(spotRetired(D) ? "FINAL EQUITY" : "EQUITY", m(e.equity_eur), (e.day_pnl_eur || 0) >= 0 ? "green" : "red", true) +
       kpi("DAY P&L", sgn(e.day_pnl_pct) + "%", cls(e.day_pnl_pct), true) +
       kpi("DAY TRADES", e.day_trades, "white") +
       kpi("TRADES ALL-TIME", s.trades_all, "white") +
       kpi("WIN RATE", fmt(s.win_rate_pct, 1) + "%", "white") +
       kpi("NET P&L ALL", sgn(s.net_all_pct) + "%", cls(s.net_all_pct)) +
       kpi("PROFIT FACTOR", fmt(s.profit_factor), fmt(s.profit_factor) >= 1 ? "green" : "red") +
-      kpi("AVG WIN / LOSS", eur(s.avg_win_eur) + " / " + eur(s.avg_loss_eur), "white") +
+      kpi("AVG WIN / LOSS", m(s.avg_win_eur) + " / " + m(s.avg_loss_eur), "white") +
       kpi("AVG HOLD", fmt(s.avg_hold_min, 0) + "m", "white") +
       kpi("STREAK", (st.cur_kind === "W" ? "▲ " : "▼ ") + (st.cur_len || 0) + "×" + (st.cur_kind || ""), st.cur_kind === "W" ? "green" : "red") +
       kpi("MAX RUN W/L", (st.max_win || 0) + "W / " + (st.max_loss || 0) + "L", "white") +
-      kpi("FEES PAID", eur(s.fees_all_eur), "red") +
+      kpi("FEES PAID", m(s.fees_all_eur), "red") +
       '<div class="kpi" style="flex:1 1 100%"><div class="k">BEST TRADE</div><div class="v green" style="font-size:12px">' +
-      (s.best_trade ? esc(s.best_trade.inst) + " " + sgn(s.best_trade.upc) + "% → " + eur(s.best_trade.net_eur) + " · " + esc(s.best_trade.reason || "") : "—") + "</div></div>" +
+      (s.best_trade ? esc(s.best_trade.inst) + " " + sgn(s.best_trade.upc) + "% → " + m(s.best_trade.net_eur) + " · " + esc(s.best_trade.reason || "") : "—") + "</div></div>" +
       '<div class="kpi" style="flex:1 1 100%"><div class="k">WORST TRADE</div><div class="v red" style="font-size:12px">' +
-      (s.worst_trade ? esc(s.worst_trade.inst) + " " + sgn(s.worst_trade.upc) + "% → " + eur(s.worst_trade.net_eur) + " · " + esc(s.worst_trade.reason || "") : "—") + "</div></div>";
+      (s.worst_trade ? esc(s.worst_trade.inst) + " " + sgn(s.worst_trade.upc) + "% → " + m(s.worst_trade.net_eur) + " · " + esc(s.worst_trade.reason || "") : "—") + "</div></div>";
     $("perf-body").innerHTML = '<div class="kpis">' + rows + "</div>";
   }
 
@@ -241,8 +273,12 @@
 
   /* ---------- jev latest ---------- */
   function renderJev(D) {
-    const j = D.jev_latest;
-    if (!j) { $("jev-body").textContent = "NO JEV CALL LOGGED YET"; return; }
+    // This panel is labelled the SPOT CALL (retired). When spot is retired it must
+    // show the frozen spot call from retired_spot, NOT D.jev_latest — which now
+    // carries the live X-Perp decision (already rendered in the X-Perps panel).
+    const retired = spotRetired(D);
+    const j = retired ? ((D.retired_spot || {}).jev_latest) : D.jev_latest;
+    if (!j) { $("jev-body").textContent = retired ? "NO SPOT CALL ON RECORD" : "NO JEV CALL LOGGED YET"; return; }
     const probs = j.probabilities || {};
     let bars = "";
     Object.keys(probs).sort((a, b) => probs[b] - probs[a]).forEach(k => {
@@ -259,7 +295,7 @@
       "<td>" + fmt(p.range30_pos_pct, 0) + "</td></tr>").join("");
     const tk = j.tokens || {};
     $("jev-body").innerHTML =
-      '<div class="dim" style="margin-bottom:4px">CALL ' + esc(mmdd_hhmm(j.ts)) + ' UTC · CASH ' + eur(j.cash_eur) +
+      '<div class="dim" style="margin-bottom:4px">' + (retired ? "FINAL CALL " : "CALL ") + esc(mmdd_hhmm(j.ts)) + ' UTC · CASH ' + eur(j.cash_eur) +
       ' · STAKE ' + eur(j.stake_eur) + ' · FUNDING ' + fmt(j.funding_bps, 1) + ' BPS · PROMPT ' +
       (tk.in || "?") + " IN/" + (tk.out || "?") + " OUT TOK</div>" +
       bars +
@@ -377,12 +413,18 @@
 
   /* ---------- funnel ---------- */
   function renderFunnel(D) {
-    const f = D.funnel || {};
+    const f = D.funnel || {}, P = D.params || {};
+    const perps = spotRetired(D);          // live book is the two-way perp book
+    const sym = perps ? "$" : "€";
+    const volK = Math.round((P.MIN_VOL24H_USD || 300000) / 1000);
+    const depthK = Math.round((P.MIN_TOP5_DEPTH_USD || 1000) / 1000 * 10) / 10;
+    const scanN = perps ? (f.perps_scanned || f.eur_pairs || "all") : (f.eur_pairs || 270);
+    const scanLbl = perps ? "X-Perp contracts" : "EUR pairs";
     const rows = [
-      [f.pair_scans_all, "PAIR LIQUIDITY SCANS", "every cycle sweeps ~" + (f.eur_pairs || 270) + " EUR pairs, keyless public feed"],
-      [f.candidates_all, "PASSED DEEP FILTERS", "vol ≥€200k · spread ≤0.20% · range ≥2% · depth ≥€1.5k"],
+      [f.pair_scans_all, "PAIR LIQUIDITY SCANS", "every cycle sweeps " + scanN + " " + scanLbl + (perps ? " · account-scoped instruments feed" : " · keyless public feed")],
+      [f.candidates_all, "PASSED DEEP FILTERS", "vol ≥" + sym + volK + "k · spread ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · range ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · depth ≥" + sym + depthK + "k"],
       [f.jev_pair_evals_all, "SETUPS EVALUATED BY JEV", "only momentum-gate survivors reach the model (" + (f.jev_calls || 0) + " calls)"],
-      [f.buy_picks, "BUY VOTES BY THE MODEL", "typed probabilities — the engine bar still applies"],
+      [f.buy_picks, perps ? "DIRECTIONAL PICKS BY THE MODEL" : "BUY VOTES BY THE MODEL", perps ? "long or short — typed probabilities; the engine bar still applies" : "typed probabilities — the engine bar still applies"],
       [f.opens, "POSITIONS OPENED", "margin/noul bar + live book re-check cleared"],
     ];
     const mx = Math.max(1, ...rows.map(r => r[0] || 0));
@@ -409,7 +451,13 @@
     const my = Math.max(0.7, Math.max.apply(null, pts.map(p => p.noul)));
     const X = (v) => PAD + Math.max(0, Math.min(1, v / mx)) * (W - 2 * PAD);
     const Y = (v) => H - PAD - Math.max(0, Math.min(1, v / my)) * (H - 2 * PAD);
-    const xBar = X(0.25), yBar = Y(0.45);
+    // Bars come from the LIVE engine's parsed constants, never literals. The old
+    // hardcoded 0.25 sat below the engine's real MARGIN_BAR of 0.30, so dots the
+    // engine would reject were drawn as having cleared the bar.
+    const P = D.params || {};
+    const mBar = (P.MARGIN_BAR !== undefined ? P.MARGIN_BAR : 0.30);
+    const nBar = (P.NOUL_BAR !== undefined ? P.NOUL_BAR : 0.45);
+    const xBar = X(mBar), yBar = Y(nBar);
     const colOf = {win: "#00e04b", loss: "#ff3b30", blocked: "#8a867a", open: "#ffb000"};
     const dots = pts.map(p => {
       const c = colOf[p.outcome] || "#8a867a";
@@ -433,9 +481,9 @@
       '<line x1="' + PAD + '" y1="' + PAD / 2 + '" x2="' + PAD + '" y2="' + (H - PAD) + '" stroke="#241f10"/>' +
       '<line x1="' + xBar.toFixed(1) + '" y1="' + (PAD / 2) + '" x2="' + xBar.toFixed(1) + '" y2="' + (H - PAD) + '" stroke="#a8760a" stroke-dasharray="4,3"/>' +
       '<line x1="' + PAD + '" y1="' + yBar.toFixed(1) + '" x2="' + (W - PAD) + '" y2="' + yBar.toFixed(1) + '" stroke="#a8760a" stroke-dasharray="4,3"/>' +
-      '<text x="' + (xBar + 4).toFixed(0) + '" y="' + (PAD / 2 + 8) + '" fill="#a8760a" font-size="9" font-family="monospace">MARGIN BAR 0.25 →</text>' +
-      '<text x="' + (PAD + 4) + '" y="' + (yBar - 4).toFixed(0) + '" fill="#a8760a" font-size="9" font-family="monospace">NOUL BAR 0.45 ↑</text>' +
-      '<text x="' + (W - PAD) + '" y="' + (H - 8) + '" fill="#8a867a" font-size="9" text-anchor="end" font-family="monospace">MARGIN p(buy)−p(no_trade) →</text>' +
+      '<text x="' + (xBar + 4).toFixed(0) + '" y="' + (PAD / 2 + 8) + '" fill="#a8760a" font-size="9" font-family="monospace">MARGIN BAR ' + fmt(mBar, 2) + ' →</text>' +
+      '<text x="' + (PAD + 4) + '" y="' + (yBar - 4).toFixed(0) + '" fill="#a8760a" font-size="9" font-family="monospace">NOUL BAR ' + fmt(nBar, 2) + ' ↑</text>' +
+      '<text x="' + (W - PAD) + '" y="' + (H - 8) + '" fill="#8a867a" font-size="9" text-anchor="end" font-family="monospace">MARGIN p(chosen)−p(no_trade) →</text>' +
       '<text x="10" y="' + (PAD / 2 + 8) + '" fill="#8a867a" font-size="9" font-family="monospace" transform="rotate(-90 10,' + (PAD / 2 + 8) + ')">NOUL ↑</text>' +
       dots + "</svg>" + legend +
       '<div class="dim" style="margin-top:3px;font-size:9.5px">TOP-RIGHT QUADRANT = TRADES FIRED. GREY DOTS = THE MODEL WANTED IN BUT THE ENGINE\'S HARD RULES (DEPTH, COOLDOWN, BAR) SAID NO — THE MODEL IS AN ADVISOR, THE CODE IS THE RISK MANAGER.</div>';
@@ -454,37 +502,45 @@
   /* ---------- exits breakdown ---------- */
   function renderExits(D) {
     const rows = (D.stats || {}).by_exit || [];
+    const sym = liveCcy(D) === "USD" ? "$" : "€";
     const mx = Math.max(0.5, Math.max.apply(null, rows.map(r => Math.abs(r.net_eur)).concat([0.5])));
     $("exits-body").innerHTML =
-      rows.map(r => abar(r.cat, r.net_eur, mx, sgn(r.net_eur) + "€ ·" + r.n + "×", r.net_eur >= 0 ? "g" : "r")).join("") +
+      rows.map(r => abar(r.cat, r.net_eur, mx, sgn(r.net_eur) + sym + " ·" + r.n + "×", r.net_eur >= 0 ? "g" : "r")).join("") +
       '<div class="dim" style="margin-top:5px">NO HUMAN CLICKS SELL. TP/SL LIVE AS OCO ORDERS ON THE EXCHANGE; THE HWM TRAILING STOP RE-ARMS ITSELF (move_order_stop). IF THIS SERVER DIES MID-TRADE, THE EXCHANGE STILL CLOSES THE POSITION.</div>';
   }
 
   /* ---------- hours ---------- */
   function renderHours(D) {
     const rows = (D.stats || {}).by_hour || [];
+    const sym = liveCcy(D) === "USD" ? "$" : "€";
     const active = rows.filter(r => r.n);
     if (!active.length) { $("hours-body").textContent = "NO CLOSED TRADES YET"; return; }
     const mx = Math.max(0.5, Math.max.apply(null, rows.map(r => Math.abs(r.net_eur)).concat([0.5])));
     $("hours-body").innerHTML =
       rows.map(r => abar(String(r.h).padStart(2, "0") + "H", r.net_eur, mx,
-        r.n ? sgn(r.net_eur) + "€·" + r.n : "—", r.net_eur >= 0 ? "g" : (r.n ? "r" : "c"))).join("");
+        r.n ? sgn(r.net_eur) + sym + "·" + r.n : "—", r.net_eur >= 0 ? "g" : (r.n ? "r" : "c"))).join("");
   }
 
   /* ---------- per instrument ---------- */
   function renderInst(D) {
     const rows = (D.stats || {}).per_inst || [];
+    const sym = liveCcy(D) === "USD" ? "$" : "€";
     const mx = Math.max(0.5, Math.max.apply(null, rows.map(r => Math.abs(r.net_eur)).concat([0.5])));
     $("inst-body").innerHTML =
-      rows.map(r => abar(r.inst.replace("-EUR", ""), r.net_eur, mx,
-        sgn(r.net_eur) + "€ ·" + r.trades + "× " + Math.round(100 * r.wins / r.trades) + "%W",
+      rows.map(r => abar(r.inst.replace("-EUR", "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, ""), r.net_eur, mx,
+        sgn(r.net_eur) + sym + " ·" + r.trades + "× " + Math.round(100 * r.wins / r.trades) + "%W",
         r.net_eur >= 0 ? "g" : "r")).join("") +
       '<div class="dim" style="margin-top:4px">THE UNIVERSE IS DYNAMIC — THE ENGINE TRADES WHATEVER PASSES LIQUIDITY, MOMENTUM AND DEPTH THIS WEEK, NOT A FIXED LIST.</div>';
   }
 
   /* ---------- universe ---------- */
   function renderUniverse(D) {
-    const u = D.universe || {};
+    // LIVE book first (the heading reads "LIVE X-PERPS + RETIRED SPOT"), then the
+    // retired spot scan as a historical record. D.universe now holds the LIVE
+    // book's scan, so the spot table must read retired_spot.universe — otherwise
+    // this panel would print the perp scan under a "SPOT EUR" heading.
+    const retired = spotRetired(D);
+    const u = (retired ? ((D.retired_spot || {}).universe || {}) : (D.universe || {}));
     const sel = u.selected || [];
     const rows = sel.map(s => {
       const b = s.bracket || {};
@@ -498,20 +554,22 @@
         "<td class='neg'>−" + fmt(b.sl_pct, 2) + "%</td>" +
         "<td class='am'>" + fmt(b.trail_arm_pct, 2) + "/" + fmt(b.trail_giveback_pct, 2) + "</td></tr>";
     }).join("");
-    $("universe-body").innerHTML =
-      '<div class="perp-h">RETIRED BOOK · SPOT EUR (LONG-ONLY) — no longer scanned for trading</div>' +
+    const spotHtml =
+      '<div class="perp-h"' + (retired ? ' style="margin-top:10px"' : '') + '>RETIRED BOOK · SPOT EUR (LONG-ONLY) — no longer scanned for trading</div>' +
       '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(u.scanned_iso)) + ' UTC · ' +
       (u.n_eur_pairs || "?") + " EUR PAIRS → LIQUIDITY+RANGE+DEPTH FILTER → " + (u.n_candidates || "?") +
       ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO JEV · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
-      "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>" +
-      perpUniverseHtml(D);
+      "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>";
+    $("universe-body").innerHTML = retired
+      ? (perpUniverseHtml(D) + spotHtml)
+      : (spotHtml + perpUniverseHtml(D));
   }
 
   function perpUniverseHtml(D) {
     const P = D.perp || {};
     const sel = P.universe_selected || [];
     const scanIso = P.universe_scanned_iso;
-    let html = '<div class="perp-h" style="margin-top:10px">LIVE BOOK · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
+    let html = '<div class="perp-h"' + (spotRetired(D) ? '' : ' style="margin-top:10px"') + '>LIVE BOOK · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
     if (!sel.length) {
       html += '<div class="dim">SCAN ' + esc(mmdd_hhmm(scanIso)) + ' UTC · ' +
         (P.universe || []).length + ' CONTRACTS SELECTED (detail pending next scan)</div>';
@@ -545,13 +603,17 @@
     if (!ps.length) {
       if (retired) {
         // The spot book no longer trades — its capital moved to the X-Perp book.
-        // Saying "FLAT, scanning every 5m" would imply a live engine that isn't.
+        // Saying "FLAT, scanning every 5m" would imply a live engine that isn't,
+        // and saying "the ledger below is its record" would be false too: the
+        // TRADE LEDGER panel now streams the LIVE book. State what is actually here.
         $("pos-body").innerHTML = '<div class="dim">' + esc(sb.status || "RETIRED") +
           ' — the long-only EUR spot book no longer trades. Its collateral was converted to ' +
           'USDC and moved to the live X-Perp book (see above). ' +
           (sb.trades_closed ? 'FINAL RECORD: ' + fmt(sb.trades_closed, 0) + ' CLOSED TRADES · ' +
-            sgn(sb.net_eur) + ' EUR (' + sgn(sb.net_pct) + '% of launch capital) · PF ' + fmt(sb.profit_factor, 2) + '. ' : '') +
-          'The full ledger and trade replays below remain available as an honest record.</div>';
+            sgn(sb.net_eur) + ' EUR (' + sgn(sb.net_pct) + '% of launch capital) · PF ' + fmt(sb.profit_factor, 2) +
+            ' · WIN RATE ' + fmt(sb.win_rate_pct, 1) + '% · FEES ' + eur(sb.fees_eur) + '. ' : '') +
+          'The ledger and replay panels below stream the LIVE X-Perp book, not this one; ' +
+          'the panels marked RETIRED carry its final numbers.</div>';
         return;
       }
       $("pos-body").innerHTML = '<div class="dim">FLAT — NO OPEN POSITIONS. ENGINE HOLDS CASH IN EUR, SCANS EVERY ' +
@@ -691,9 +753,19 @@
       const txt = m ? m[2] : n;
       return '<div class="news-item"><span class="src">[' + esc(src.toUpperCase()) + "]</span>" + esc(txt) + "</div>";
     }).join("");
-    $("news-age").textContent = "INGESTED " + esc(mmdd_hhmm(D.news_updated)) + " UTC · 30-MIN GUARD, RIDES WITH EVERY JEV CALL";
+    // HONESTY: these feeds were written by the retired spot engine and are what IT
+    // put into its prompts. The live X-Perp engine injects funding + momentum only,
+    // so claiming this "rides with every Jev call" would describe a system that no
+    // longer exists. Show the source and the age instead.
+    const staleMin = ageMin(D.news_updated);
+    const feedNote = spotRetired(D)
+      ? "OBSERVER CONTEXT — NOT INJECTED INTO THE LIVE BOOK. The live X-Perp engine decides on funding + multi-timeframe momentum; RSS catalysts were prompt context for the retired spot engine."
+      : "RIDES WITH EVERY JEV CALL — 30-MIN GUARD";
+    $("news-age").textContent = "INGESTED " + esc(mmdd_hhmm(D.news_updated)) + " UTC" +
+      (staleMin !== null ? " · " + staleMin + "M AGO" : "") +
+      (staleMin !== null && staleMin > 45 ? " · ⚠ FEED STALE" : "");
     let html = items || '<div class="dim">NO FRESH CATALYSTS IN WINDOW</div>';
-    html += '<div class="dim" style="margin-top:4px">NOT A 24/7 FIREHOSE — THE WIRE REFRESHES ON A 30-MIN GUARD AND ENTERS THE MODEL PROMPT VERBATIM. NEWS IS CONTEXT FOR THE DECISION, NEVER A TRIGGER BY ITSELF.</div>';
+    html += '<div class="dim" style="margin-top:4px">' + feedNote + '</div>';
     $("news-body").innerHTML = html;
   }
 
@@ -719,9 +791,15 @@
         "<td class='dim'>" + (c.mcap_rank || "—") + "</td></tr>";
     }).join("");
     const trend = (s.trending || []).map(t => '<span class="chip">' + esc(t) + "</span>").join("");
+    // Same honesty rule as the news panel: these are keyless observer feeds, and
+    // the pairs listed are the RETIRED spot engine's EUR universe — the live book
+    // trades USD X-Perp contracts. Say so instead of implying it's live context.
+    const stale = ageMin(s.updated);
     $("sent-body").innerHTML =
       fgBar(s.fear_greed) +
-      '<div class="dim" style="margin:4px 0">BTC PERP FUNDING: <span class="am">' + fmt(s.funding_bps, 1) + ' BPS</span> · SOURCES: ALTERNATIVE.ME + COINGECKO (KEYLESS) · ' + esc(mmdd_hhmm(s.updated)) + " UTC</div>" +
+      '<div class="dim" style="margin:4px 0">BTC PERP FUNDING: <span class="am">' + fmt(s.funding_bps, 1) + ' BPS</span> · SOURCES: ALTERNATIVE.ME + COINGECKO (KEYLESS) · ' + esc(mmdd_hhmm(s.updated)) + " UTC" +
+      (stale !== null ? " · " + stale + "M AGO" : "") + (stale !== null && stale > 45 ? ' · <span class="neg">⚠ STALE</span>' : "") + "</div>" +
+      (spotRetired(D) ? '<div class="dim" style="margin-bottom:4px">OBSERVER CONTEXT ONLY — the coin table below is the retired spot engine\'s EUR universe. The live X-Perp book injects per-contract funding + momentum, not these polls.</div>' : "") +
       "<table><tr><th>PAIR</th><th>24H</th><th>BULL VOTE</th><th>TREND</th><th>WATCHLISTS</th><th>OFF ATH</th><th>MCAP#</th></tr>" + rows + "</table>" +
       '<div class="dim" style="margin-top:5px">GLOBAL ATTENTION: ' + trend + "</div>";
   }
@@ -729,6 +807,17 @@
   /* ---------- macro ---------- */
   function renderMacro(D) {
     const m = D.macro || {};
+    // The live X-Perp engine does NOT inject econ-calendar events — only the
+    // retired spot engine did. Saying "NO FRESH ENTRIES INTO IMP-3 RELEASES"
+    // would describe a protection the live book does not have. State the source.
+    if (m.source === "not-injected-into-live-book") {
+      $("macro-body").innerHTML =
+        '<div class="dim" style="line-height:1.55">NOT WIRED INTO THE LIVE BOOK.<br><br>' +
+        esc(m.note || "The live X-Perp engine injects funding + multi-timeframe momentum only.") +
+        '<br><br>The retired spot engine did gate entries around high-impact releases; ' +
+        "that protection went with it. Nothing here is stale data being passed off as current.</div>";
+      return;
+    }
     const up = (m.upcoming || []).map(e =>
       "<tr><td class='am'>" + esc(e.e) + "</td><td>" + esc(e.ccy) + "</td><td>" +
       "★".repeat(e.imp || 1) + "</td><td>" + fmt(e.in_h, 1) + "H</td></tr>").join("");
@@ -745,38 +834,50 @@
   /* ---------- jev vote tape ---------- */
   function renderHist(D) {
     const h = D.jev_history || [];
+    const P = D.params || {};
+    const mBar = (P.MARGIN_BAR !== undefined ? P.MARGIN_BAR : 0.30);
+    const nBar = (P.NOUL_BAR !== undefined ? P.NOUL_BAR : 0.45);
     const rows = h.map(j => {
       const fired = j.choice && j.choice !== "no_trade";
-      const label = fired ? j.choice.replace("buy_", "").toUpperCase() : "FLAT";
+      // choice is buy_<base> (spot) or long_<base>/short_<base> (two-way perp)
+      const side = /^short_/.test(j.choice || "") ? "▼ " : (/^(long|buy)_/.test(j.choice || "") ? "▲ " : "");
+      const label = fired ? String(j.choice).replace(/^(buy|long|short)_/, "").toUpperCase() : "FLAT";
       const mw = Math.min(64, Math.max(2, Math.abs((j.margin || 0) * 100) * 0.9));
       return "<tr><td class='dim'>" + esc(mmdd_hhmm(j.ts)) + "</td>" +
-        "<td class='" + (fired ? "pos" : "dim") + "'>" + (fired ? "▲ " : "") + esc(label) + "</td>" +
+        "<td class='" + (fired ? (/^short_/.test(j.choice) ? "neg" : "pos") : "dim") + "'>" + (fired ? side : "") + esc(label) + "</td>" +
         "<td>" + fmt(j.conf, 2) + "</td>" +
         "<td><div style='display:flex;align-items:center;gap:4px;justify-content:flex-end'>" +
         "<div style='height:8px;width:" + mw.toFixed(0) + "px;background:" + (fired ? "var(--green-dim)" : "#333") + "'></div>" +
-        "<span class='" + (j.margin >= 0.25 ? "am" : "dim") + "' style='width:38px;text-align:right'>" + sgn(j.margin) + "</span></div></td>" +
-        "<td class='" + (j.noul >= 0.45 ? "am" : "dim") + "'>" + fmt(j.noul, 2) + "</td>" +
+        "<span class='" + (j.margin >= mBar ? "am" : "dim") + "' style='width:38px;text-align:right'>" + sgn(j.margin) + "</span></div></td>" +
+        "<td class='" + (j.noul >= nBar ? "am" : "dim") + "'>" + fmt(j.noul, 2) + "</td>" +
         "<td class='dim'>" + (j.tok || "?") + "</td></tr>";
     }).join("");
-    $("hist-body").innerHTML = "<table><tr><th>UTC</th><th>VOTE</th><th>CONF</th><th>MARGIN p(buy)−p(flat)</th><th>NOUL</th><th>TOK</th></tr>" + rows + "</table>";
+    $("hist-body").innerHTML = "<table><tr><th>UTC</th><th>VOTE</th><th>CONF</th><th>MARGIN p(chosen)−p(flat)</th><th>NOUL</th><th>TOK</th></tr>" + rows + "</table>";
   }
 
   /* ---------- trades ledger (clickable → dossier) ---------- */
   function renderTrades(D) {
-    const rows = (D.trades || []).map(t =>
-      "<tr class='trade-row" + (t.tid === OPEN_TID ? " sel" : "") + "' data-tid='" + esc(t.tid) + "'" +
+    const sym = liveCcy(D) === "USD" ? "$" : "€";
+    const twoWay = spotRetired(D);   // live book is the two-way perp book
+    const rows = (D.trades || []).map(t => {
+      // direction tag: only meaningful for the two-way perp book
+      const sd = (t.side === "short") ? " <span class='short-tag'>▼</span>"
+        : (t.side === "long") ? " <span class='long-tag'>▲</span>" : "";
+      const nm = String(t.inst || "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, "");
+      return "<tr class='trade-row" + (t.tid === OPEN_TID ? " sel" : "") + "' data-tid='" + esc(t.tid) + "'" +
       (t.debrief ? " title='" + esc(t.debrief) + "'" : "") +
       "><td class='dim'>" + esc(mmdd_hhmm(t.close_ts)) + "</td>" +
-      "<td class='sym'>" + esc(t.inst) + (t.debrief ? " <span style='color:var(--cyan);font-size:8px'>◈LLM</span>" : "") + "</td>" +
-      "<td>" + eur(t.stake_eur) + "</td>" +
+      "<td class='sym'>" + esc(nm) + sd + (t.debrief ? " <span style='color:var(--cyan);font-size:8px'>◈LLM</span>" : "") + "</td>" +
+      "<td>" + sym + fmt(t.stake_eur, 2) + "</td>" +
       "<td class='" + cls(t.upc) + "'>" + sgn(t.upc) + "%</td>" +
       "<td class='" + cls(t.net_eur) + "'>" + sgn(t.net_eur) + "</td>" +
       "<td class='dim'>−" + fmt(t.fees_eur, 2) + "</td>" +
       "<td>" + fmt(t.age_min, 0) + "m</td>" +
       "<td class='dim' style='text-align:left'>" + esc(t.reason) + "</td>" +
-      "<td class='cy' style='font-size:9px'>REPLAY ▸</td></tr>").join("");
-    $("trades-body").innerHTML = "<table><tr><th>CLOSED UTC</th><th>PAIR</th><th>STAKE</th><th>MOVE</th><th>NET €</th><th>FEES</th><th>HELD</th><th>EXIT</th><th></th></tr>" + rows +
-      "</table><div class='dim' style='margin-top:3px;font-size:9.5px'>▸ CLICK ANY ROW — FULL DECISION REPLAY: THE EXACT STATE JEV SAW, ITS VOTE, THE GATES, NEWS IN THE PROMPT, EVERY EVENT ENTRY→EXIT, PLUS AN LLM POST-MORTEM · <span style='color:var(--cyan)'>◈LLM</span> = DEBRIEF READY (HOVER)</div>";
+      "<td class='cy' style='font-size:9px'>REPLAY ▸</td></tr>";
+    }).join("");
+    $("trades-body").innerHTML = "<table><tr><th>CLOSED UTC</th><th>PAIR</th><th>" + (twoWay ? "NOTIONAL" : "STAKE") + "</th><th>MOVE</th><th>NET " + sym + "</th><th>FEES</th><th>HELD</th><th>EXIT</th><th></th></tr>" + rows +
+      "</table><div class='dim' style='margin-top:3px;font-size:9.5px'>▸ CLICK ANY ROW — FULL DECISION REPLAY: THE EXACT STATE JEV SAW, ITS VOTE, THE GATES, EVERY EVENT ENTRY→EXIT, PLUS AN LLM POST-MORTEM · <span style='color:var(--cyan)'>◈LLM</span> = DEBRIEF READY (HOVER)</div>";
     document.querySelectorAll(".trade-row").forEach(tr => {
       tr.onclick = () => openDossier(tr.getAttribute("data-tid"));
     });
@@ -796,6 +897,10 @@
         '<div class="dbar-meta">' + d.trades + " trades · " + Math.round(100 * d.wins / Math.max(1, d.trades)) + "% win</div></div>";
     }).join("");
     $("daily-body").innerHTML = rows || '<div class="dim">NO CLOSED DAYS YET</div>';
+    // Heading carries the LIVE book's currency (was hardcoded "(EUR)" while the
+    // bars were already rendering the USD perp book).
+    const dh = document.getElementById("daily-h");
+    if (dh) dh.textContent = "DAILY NET P&L (" + (liveCcy(D) === "USD" ? "USD" : "EUR") + ")";
   }
 
   /* ---------- model stack ---------- */
@@ -809,7 +914,9 @@
       '<div class="sc-lines">' + lines.map(l => '<div>▸ ' + esc(l) + "</div>").join("") + "</div></div>";
     $("stack-body").innerHTML =
       card("DECISION ENGINE", "Jev System-One (jev-latest)", "TYPED / SCHEMA-ENFORCED · NOT TEXT", [
-        "Returns probabilities, not prose — p(buy) per pair, noul rise-prob, confidence",
+        spotRetired(D)
+          ? "Returns probabilities, not prose — p(long) AND p(short) per contract, rise/fall-prob, confidence"
+          : "Returns probabilities, not prose — p(buy) per pair, noul rise-prob, confidence",
         "Zero parsing, zero hallucinated numbers; the engine reads a typed struct",
         (f.jev_calls || 0) + " calls · avg " + (f.avg_input_tok || "?") + " tok in / " + (f.avg_output_tok || "?") + " out",
         "$0.04 per 1M input tokens — decisions cost fractions of a cent",
@@ -825,29 +932,46 @@
 
   /* ---------- prompt / cost optimization ---------- */
   function renderOptim(D) {
-    const f = D.funnel || {};
+    const f = D.funnel || {}, P = D.params || {};
     const tk = (D.jev_latest || {}).tokens || {};
-    const budget = 3400; // MAX_JEV_INPUT_TOKENS alarm in the engine
+    // The trim/budget machinery exists ONLY in the engine that defines
+    // MAX_STATE_CHARS. The live X-Perp engine has none — its prompt is a few
+    // hundred tokens (<=4 contracts, no news/macro blocks) — so the old copy
+    // ("HARD-CAPS INPUT", "auto-cuts news->macro->pairs", "NEWS SHRINKS BEFORE
+    // MACRO") described code that is not running. Report what is real.
+    const hasBudget = !!P.has_prompt_budget;
+    const budget = P.MAX_JEV_INPUT_TOKENS || null;
     const avgIn = f.avg_input_tok || 0;
-    const pct = Math.min(100, Math.round(100 * avgIn / budget));
+    const pct = (hasBudget && budget) ? Math.min(100, Math.round(100 * avgIn / budget)) : 0;
     const row = (name, val, note) =>
       '<div class="opt-row"><span class="opt-n">' + esc(name) + '</span><span class="opt-v">' + val + '</span>' +
       (note ? '<span class="opt-note">' + esc(note) + "</span>" : "") + "</div>";
+    const gauge = (hasBudget && budget)
+      ? '<div class="opt-gauge"><div class="opt-gauge-fill" style="width:' + pct + '%"></div>' +
+        '<span class="opt-gauge-txt">' + avgIn + " / " + budget + " TOK · " + pct + "% OF ALARM</span></div>"
+      : '<div class="opt-gauge"><div class="opt-gauge-fill" style="width:100%"></div>' +
+        '<span class="opt-gauge-txt">' + avgIn + ' TOK / CALL · NO CAP NEEDED</span></div>';
     $("optim-body").innerHTML =
-      '<div class="dim" style="font-size:10px;margin-bottom:6px">EVERY DECISION PROMPT IS BUDGETED & TRIMMED IN CODE. THE ENGINE MEASURES ~1.65 CHARS/TOKEN AND HARD-CAPS INPUT SO THE LOCAL MODEL STAYS FAST AND CHEAP.</div>' +
-      '<div class="opt-gauge"><div class="opt-gauge-fill" style="width:' + pct + '%"></div>' +
-      '<span class="opt-gauge-txt">' + avgIn + " / " + budget + " TOK · " + pct + "% OF ALARM</span></div>" +
+      '<div class="dim" style="font-size:10px;margin-bottom:6px">' + (hasBudget
+        ? "EVERY DECISION PROMPT IS BUDGETED & TRIMMED IN CODE. THE ENGINE MEASURES ~" + fmt(P.CHARS_PER_TOKEN, 2) + " CHARS/TOKEN AND HARD-CAPS INPUT SO THE MODEL STAYS FAST AND CHEAP."
+        : "THE LIVE X-PERP PROMPT IS SMALL BY CONSTRUCTION — AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS WITH A HANDFUL OF NUMBERS EACH, AND NO NEWS/MACRO BLOCKS — SO IT NEEDS NO TRIM LOOP. NOTHING IS CAPPED BECAUSE NOTHING COMES CLOSE.") + "</div>" +
+      gauge +
       row("AVG INPUT / CALL", avgIn + " tok", "measured across " + (f.jev_calls || 0) + " live calls") +
       row("PEAK INPUT / CALL", (f.max_input_tok || "—") + " tok", "worst-case state size") +
       row("AVG OUTPUT / CALL", (f.avg_output_tok || "—") + " tok", "typed JSON only") +
-      row("STATE CHARS / CALL", (f.avg_state_chars || "—"), "dense per-pair telemetry") +
-      row("BUDGET TRIMS", (f.budget_warns || 0) + " total", "auto-cuts news→macro→pairs when over") +
-      '<div class="dim" style="margin-top:6px;font-size:10px">TRIM PRIORITY IS HAND-TUNED: NEWS SHRINKS BEFORE MACRO, MACRO BEFORE THE PAIR TABLE. THE MODEL ALWAYS SEES THE NUMBERS THAT MOVE THE DECISION FIRST.</div>';
+      row("STATE CHARS / CALL", (f.avg_state_chars || "—"), hasBudget ? "dense per-pair telemetry" : "per-contract telemetry") +
+      (hasBudget
+        ? row("BUDGET TRIMS", (f.budget_warns || 0) + " total", "auto-cuts news→macro→pairs when over")
+        : row("BUDGET TRIMS", "n/a", "no trim loop in this engine — see note above")) +
+      '<div class="dim" style="margin-top:6px;font-size:10px">' + (hasBudget
+        ? "TRIM PRIORITY IS HAND-TUNED: NEWS SHRINKS BEFORE MACRO, MACRO BEFORE THE PAIR TABLE. THE MODEL ALWAYS SEES THE NUMBERS THAT MOVE THE DECISION FIRST."
+        : "COST IS BOUNDED BY THE CANDIDATE CAP, NOT BY A TRIMMER: THE ENGINE SENDS AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS PER CALL, SO INPUT SIZE CANNOT GROW WITH THE UNIVERSE.") + "</div>";
   }
 
   /* ---------- decision economics ---------- */
   function renderCostLive(D) {
     const f = D.funnel || {}, s = D.stats || {};
+    const sym = liveCcy(D) === "USD" ? "$" : "€";
     const opens = f.opens || 0, calls = f.jev_calls || 0;
     const usdAll = f.usd_all || 0;
     const perDecision = calls ? usdAll / calls : 0;
@@ -862,26 +986,53 @@
       big("COST / JEV DECISION", "$" + perDecision.toFixed(6), (calls || 0) + " calls all-time", "g") +
       big("COST / TRADE OPENED", "$" + perTrade.toFixed(4), (opens || 0) + " opens all-time", "g") +
       big("TOTAL MODEL SPEND", "$" + usdAll.toFixed(2), ((f.tok_input_all || 0) / 1e3).toFixed(0) + "k tok in", "g") +
-      big("EXCHANGE FEES PAID", "€" + fees.toFixed(2), "the real cost of scalping", "r") +
+      big("EXCHANGE FEES PAID", sym + fees.toFixed(2), "the real cost of scalping", "r") +
       "</div>" +
       '<div class="dim" style="margin-top:7px;font-size:10.5px;line-height:1.5">' +
       "THE WHOLE GAME IS FEES, NOT INFERENCE. THIS ENGINE HAS SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
-      "</b> ON EVERY JEV DECISION IT EVER MADE, AND <b style='color:var(--red)'>€" + fees.toFixed(2) +
+      "</b> ON EVERY JEV DECISION IT EVER MADE, AND <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
       "</b> ON EXCHANGE FEES. A SCALPER'S EDGE LIVES OR DIES ON THE FEE LINE — WHICH IS WHY THE ENTRY IS MAKER-FIRST AND THE UNIVERSE IS FILTERED FOR TIGHT SPREADS. THE AI IS NEARLY FREE; THE MARKET ACCESS IS NOT.</div>";
   }
 
   /* ---------- architecture ---------- */
   function renderArch(D) {
     const f = D.funnel || {};
+    // Every constant below comes from D.params, parsed out of the LIVE engine's
+    // source by generate.py. This panel used to hardcode all eight steps against
+    // the retired spot engine — "MARGIN ≥0.25", "IOC CHASE FALLBACK" (deleted in
+    // v3.8), "STAKE = ALL FREE EUR", cooldowns 15m/30m, stale exit 90m — while the
+    // live book ran different values on every one. Parse, never transcribe.
+    const p = D.params || {};
+    // The live book IS the perp book exactly when spot is retired. (An earlier
+    // version had this inverted — `!spotRetired(D)` — which rendered all eight
+    // architecture steps describing the retired spot engine while the perp engine
+    // was the one actually trading.)
+    const perps = spotRetired(D);
+    const sym = perps ? "$" : "€";
     const steps = [
-      ["1", "SCAN", "~" + (f.eur_pairs || 270) + " EUR SPOT PAIRS EVERY CYCLE — KEYLESS OKX PUBLIC FEED"],
-      ["2", "FILTER", "LIQUIDITY ≥€200K · SPREAD ≤0.20% · 24H RANGE ≥2% · TOP-5 BOOK DEPTH ≥€1.5K — THIN BOOKS GET REJECTED, NOT TRADED"],
-      ["3", "GATES", "DETERMINISTIC MOMENTUM: 30M TREND · GREEN-BAR COUNT · RANGE POSITION · NET TAKER BUYING · 30M VOL ≥ TP REACHABILITY — CODE, NOT OPINION"],
-      ["4", "CONTEXT", "RSS HEADLINES (30-MIN GUARD) · FEAR&GREED + STREAK · COMMUNITY POLLS · BTC FUNDING · ECON CALENDAR + SURPRISE PRINTS · 30M/4H/7D MULTI-TIMEFRAME"],
-      ["5", "DECIDE", "JEV SYSTEM-ONE RETURNS TYPED OUTPUT: P(BUY) PER PAIR · NOUL RISE-PROBABILITY · CONFIDENCE — SCHEMA-ENFORCED, NO TEXT PARSING, NO HALLUCINATED NUMBERS"],
-      ["6", "VETO", "ENGINE BAR: MARGIN ≥0.25 OR CONF ≥0.50, AND NOUL ≥0.45 — THEN LIVE BOOK RE-CHECK: DEPTH ≥3× STAKE, BRACKET REPRICED FROM THE REAL SPREAD"],
-      ["7", "EXECUTE", "MAKER-FIRST ENTRY, IOC CHASE FALLBACK · STAKE = ALL FREE EUR / OPEN SLOTS · SERVER-SIDE OCO TP/SL ATTACHED AT FILL"],
-      ["8", "MANAGE", "HWM TRAILING STOP RE-ARMED ON-EXCHANGE · TIME-STOP 30M LOSING · STALE-EXIT 90M · WIN 15M / LOSS 30M COOLDOWNS · −8% DAILY BREAKER"],
+      ["1", "SCAN", perps
+        ? "CRYPTO X-PERP CONTRACTS EVERY CYCLE — ACCOUNT-SCOPED /account/instruments (MiFID USD-MARGINED)"
+        : "~" + (f.eur_pairs || 270) + " EUR SPOT PAIRS EVERY CYCLE — KEYLESS OKX PUBLIC FEED"],
+      ["2", "FILTER", "LIQUIDITY ≥" + sym + Math.round((p.MIN_VOL24H_USD || 300000) / 1000) + "K · SPREAD ≤" + fmt(p.MAX_SPREAD_PCT, 2) +
+        "% · 24H RANGE ≥" + fmt(p.MIN_DAY_RANGE_PCT, 1) + "% · TOP-5 BOOK DEPTH ≥" + sym + Math.round(p.MIN_TOP5_DEPTH_USD || 1000) +
+        " — THIN BOOKS GET REJECTED, NOT TRADED"],
+      ["3", "GATES", "DETERMINISTIC MOMENTUM: 30M TREND · GREEN-BAR COUNT · RANGE POSITION · NET TAKER BUYING · 30M VOL ≥ " +
+        fmt(p.MIN_VOL30_PCT, 2) + "% (TP REACHABILITY) — CODE, NOT OPINION"],
+      ["4", "CONTEXT", perps
+        ? "PER-CONTRACT FUNDING RATE · 30M/4H/7D MULTI-TIMEFRAME MOMENTUM · SPREAD + RANGE POSITION · BRACKET GEOMETRY"
+        : "RSS HEADLINES (30-MIN GUARD) · FEAR&GREED + STREAK · COMMUNITY POLLS · BTC FUNDING · ECON CALENDAR + SURPRISE PRINTS · 30M/4H/7D MULTI-TIMEFRAME"],
+      ["5", "DECIDE", "JEV SYSTEM-ONE RETURNS TYPED OUTPUT: " + (perps
+        ? "P(LONG) AND P(SHORT) PER CONTRACT · RISE- AND FALL-PROBABILITY"
+        : "P(BUY) PER PAIR · NOUL RISE-PROBABILITY") + " · CONFIDENCE — SCHEMA-ENFORCED, NO TEXT PARSING, NO HALLUCINATED NUMBERS"],
+      ["6", "VETO", "ENGINE BAR: MARGIN ≥" + fmt(p.MARGIN_BAR, 2) + " OR CONF ≥" + fmt(p.CONF_BAR, 2) +
+        ", AND CONF ≥" + fmt(p.CONF_FLOOR, 2) + " FLOOR, AND NOUL ≥" + fmt(p.NOUL_BAR, 2) +
+        " — THEN LIVE BOOK RE-CHECK: DEPTH ≥3× STAKE, BRACKET REPRICED FROM THE REAL SPREAD"],
+      ["7", "EXECUTE", "MAKER-FIRST ENTRY (POST_ONLY — UNFILLED = NO TRADE, NO CHASE) · " + (perps
+        ? "NOTIONAL = " + Math.round((p.MAX_NOTIONAL_FRAC || 0.98) * 100) + "% OF USDC EQUITY · " + (p.PERP_LEV || 1) + "× ISOLATED"
+        : "STAKE = ALL FREE EUR / OPEN SLOTS") + " · SERVER-SIDE OCO TP/SL ATTACHED AT FILL"],
+      ["8", "MANAGE", "HWM TRAILING STOP RE-ARMED ON-EXCHANGE · TIME-STOP " + (p.TIME_STOP_MIN || 30) + "M LOSING · STALE-EXIT " +
+        (p.STALE_EXIT_MIN || 60) + "M · WIN " + (p.WIN_COOLDOWN_MIN || 10) + "M / LOSS " + (p.COOLDOWN_MIN || 20) +
+        "M COOLDOWNS · −" + fmt(p.DAILY_LOSS_PCT, 0) + "% DAILY BREAKER"],
     ];
     const rows = steps.map(s =>
       '<div class="gate" style="align-items:flex-start"><span class="mark cy">' + s[0] + '</span><span class="gname am" style="flex:0 0 74px">' + s[1] +
@@ -985,16 +1136,23 @@
     return "";
   }
   function tlText(e) {
+    // Currency from the event's own book (normalizer stamps ccy="USD" on perp
+    // events); defaults to EUR for the retired spot timeline.
+    const sym = e.ccy === "USD" ? "$" : "€";
+    const side = e.side === "short" ? "▼ SHORT" : (e.side === "long" ? "▲ LONG" : "▲");
     switch (e.event) {
-      case "open": return "▲ ENTRY FILLED @ " + e.fill_px + " · stake €" + fmt(e.stake) + " · " + (e.entry_type || "-") +
+      case "open": return side + " ENTRY FILLED @ " + e.fill_px + " · " + (e.ccy === "USD" ? "notional " : "stake ") + sym + fmt(e.stake) + " · " + (e.entry_type || "-") +
         " · conf " + fmt(e.conf) + " margin " + fmt(e.margin) + " noul " + fmt(e.noul) +
         (e.algo_ok === false ? " · ⚠ OCO ATTACH FAILED — POLL STOP OWNS IT" : " · OCO ATTACHED");
       case "close": return "▼ MANAGED EXIT " + sgn(e.upc) + "% — " + (e.reason || "");
       case "close_detected": return "▼ SERVER-SIDE EXIT " + sgn(e.upc) + "% — " + (e.note || "OCO fired on-exchange");
       case "trail_armed": return "◈ TRAIL ARMED · HWM +" + fmt(e.hwm_pct) + "% · callback " + fmt((e.callBackRatio || 0) * 100, 2) + "% · active @ " + e.activePx;
       case "quality_gate_reject": return "GATE REJECT: " + (e.fails || []).join("; ");
-      case "universe_depth_reject": return "DEPTH REJECT — top5 book €" + e.depth_eur + " below floor";
-      case "cooldown_skip": return "COOLDOWN — re-entry locked " + e.min + "m";
+      case "universe_depth_reject": return "DEPTH REJECT — top5 book " + sym + e.depth_eur + " below floor";
+      // two field shapes exist in the log (left_min+after, and min) — accept both
+      case "cooldown_skip": return "COOLDOWN — re-entry locked " +
+        (e.left_min !== undefined && e.left_min !== null ? fmt(e.left_min, 1) : e.min) + "m" +
+        (e.after ? " after " + e.after : "");
       case "algo_fallback": return e.ok ? "STANDALONE OCO PLACED (attach fallback ok)" : "OCO FALLBACK ATTEMPTED";
       case "algo_fallback_err": return "⚠ OCO ATTACH ERROR: " + (e.err || "");
       case "entry_unfilled": return "MAKER ENTRY UNFILLED — cancelled, no chase";
@@ -1120,26 +1278,47 @@
     const probs = dec.probabilities || {};
     const ps = dec.pair_state || {};
     const b = t.bracket || ps.bracket || {};
-    const head = '<div class="modal-head"><span class="mt">◈ ' + esc(t.inst) + " — " + sgn(t.upc) + "% → " + eur(t.net_eur) +
+    // renderDossier gets the dossier `d`, not the deck data `D`, so live engine
+    // constants come from the module-scope CUR_DATA snapshot. An earlier edit
+    // referenced a bare `P` here, which is undefined in this scope — a
+    // ReferenceError would have broken every dossier, i.e. the one clickable
+    // feature the deck has.
+    const P = ((CUR_DATA || {}).params) || {};
+    // The dossier is the ONE clickable thing on the deck, so its numbers get read
+    // closely: a $131 X-Perp trade must not print as "€131", and a SHORT must not
+    // be labelled "BUY". Use the trip's own currency + side.
+    const ccy = t.ccy || "USD";
+    const sym = ccy === "USD" ? "$" : "€";
+    const mon = (n) => money(n, ccy);
+    const head = '<div class="modal-head"><span class="mt">◈ ' + esc(t.inst) +
+      (t.side ? " (" + String(t.side).toUpperCase() + ")" : "") + " — " + sgn(t.upc) + "% → " + mon(t.net_eur) +
       '</span><span class="ms">' + esc(mmdd_hhmm(t.open_ts)) + " → " + esc(mmdd_hhmm(t.close_ts)) + " UTC · HELD " +
       fmt(t.age_min, 0) + "M · " + esc(t.reason || "") +
       '</span><span class="modal-close">[X] CLOSE · ESC</span></div>';
 
     const verdict = '<div class="verdict-lg' + (t.net_eur > 0 ? "" : " block") + '">' +
-      (t.net_eur > 0 ? "▲ WINNER " : "▼ LOSER ") + sgn(t.net_eur) + "€ NET OF FEES · " + sgn(t.upc) +
+      (t.net_eur > 0 ? "▲ WINNER " : "▼ LOSER ") + sgn(t.net_eur) + sym + " NET OF FEES · " + sgn(t.upc) +
       "% MOVE · EXIT: " + esc(String(t.reason || "").toUpperCase()) + "</div>" +
       (d.debrief ? '<div class="decision-line" style="margin:-6px 0 12px">▸ LLM POST-MORTEM (' + esc(LLM_NAME) + "): " + esc(d.debrief) + "</div>" : "");
 
+    // probability-bar labels: spot emits buy_<base>; the two-way perp book emits
+    // long_<base>/short_<base>. Stripping only "buy_" left perp bars reading
+    // "BUY SHORT_NEAR", which contradicts the trade's own direction.
+    const probLabel = (k) => {
+      if (k === "no_trade") return "NO_TRADE";
+      const m = /^(long|short|buy)_(.+)$/.exec(k);
+      if (!m) return String(k).toUpperCase();
+      return (m[1] === "short" ? "▼ SHORT " : "▲ LONG ") + m[2].toUpperCase();
+    };
     const sec1 = '<div class="msec"><h3>1 · THE MODEL VOTE — WHAT JEV RETURNED (TYPED JSON, NOT TEXT)</h3>' +
       '<div class="dim" style="margin-bottom:5px">CALL AT ' + esc(mmdd_hhmm(dec.ts)) + ' UTC · SCHEMA-ENFORCED OUTPUT — THE ENGINE NEVER PARSES PROSE</div>' +
       Object.keys(probs).sort((a, x) => probs[x] - probs[a]).map(k =>
-        pbar(k === "no_trade" ? "NO_TRADE" : "BUY " + k.replace("buy_", "").toUpperCase(), probs[k], k === dec.choice && dec.choice !== "no_trade")).join("") +
+        pbar(probLabel(k), probs[k], k === dec.choice && dec.choice !== "no_trade")).join("") +
       '<div class="mgrid" style="margin-top:8px">' +
       '<div class="mbox"><div class="mk">PICKED</div><div class="mv">' + esc(String(dec.choice || "?").toUpperCase()) + "</div></div>" +
       '<div class="mbox"><div class="mk">CONFIDENCE</div><div class="mv">' + fmt(dec.confidence) + "</div></div>" +
-      '<div class="mbox"><div class="mk">MARGIN p(buy)−p(flat)</div><div class="mv">' + sgn(dec.margin) + "</div></div>" +
-      '<div class="mbox"><div class="mk">NOUL ↑45M</div><div class="mv ' + (dec.noul >= 0.45 ? "g" : "r") + '">' + fmt(dec.noul) + "</div></div>" +
-      '<div class="mbox"><div class="mk">BAR: MARGIN≥0.25 OR CONF≥0.5 · NOUL≥0.45</div><div class="mv g">CLEARED</div></div>' +
+      '<div class="mbox"><div class="mk">MARGIN p(chosen)−p(flat)</div><div class="mv">' + sgn(dec.margin) + "</div></div>" +
+      '<div class="mbox"><div class="mk">NOUL MOVE-PROB</div><div class="mv ' + (dec.noul >= 0.45 ? "g" : "r") + '">' + fmt(dec.noul) + "</div></div>" +
       "</div></div>";
 
     const chosenKeys = Object.keys(dec.all_pairs || {});
@@ -1159,12 +1338,13 @@
     const sec2 = '<div class="msec"><h3>2 · THE MARKET STATE JEV SAW — EXACT PROMPT INPUT</h3>' +
       "<table class='pairmini'><tr><th>PAIR</th><th>BID</th><th>30M</th><th>4H</th><th>7D</th><th>R30 POS</th><th>GREEN BARS</th><th>VOL30</th><th>SPREAD</th></tr>" + pairRows + "</table>" +
       '<div class="mgrid" style="margin-top:8px">' +
-      '<div class="mbox"><div class="mk">CASH FREE</div><div class="mv">' + eur(dec.cash_eur) + "</div></div>" +
-      '<div class="mbox"><div class="mk">STAKE = ALL FUNDS/SLOTS</div><div class="mv">' + eur(dec.stake_eur) + "</div></div>" +
+      '<div class="mbox"><div class="mk">' + (ccy === "USD" ? "USDC COLLATERAL" : "CASH FREE") + '</div><div class="mv">' + mon(dec.cash_eur) + "</div></div>" +
+      '<div class="mbox"><div class="mk">' + (ccy === "USD" ? "NOTIONAL BUDGET" : "STAKE = ALL FUNDS/SLOTS") + '</div><div class="mv">' + mon(dec.stake_eur) + "</div></div>" +
       '<div class="mbox"><div class="mk">BTC FUNDING</div><div class="mv">' + fmt(dec.funding_bps, 1) + " bps</div></div>" +
       '<div class="mbox"><div class="mk">OPEN POSITIONS AT CALL</div><div class="mv w">' + ((dec.open_positions || []).length) + "</div></div>" +
       '<div class="mbox"><div class="mk">PROMPT</div><div class="mv w">' + ((dec.usage || {}).input_tokens || "?") + " in / " + ((dec.usage || {}).output_tokens || "?") + " out tok</div></div>" +
-      '<div class="mbox"><div class="mk">STATE SIZE</div><div class="mv w">' + ((dec.prompt_stats || {}).state_chars || "?") + " chars (budget 6200)</div></div>" +
+      '<div class="mbox"><div class="mk">STATE SIZE</div><div class="mv w">' + ((dec.prompt_stats || {}).state_chars || "?") + " chars" +
+      (P.MAX_STATE_CHARS ? " (cap " + Math.round(P.MAX_STATE_CHARS) + ")" : " (no cap — small prompt)") + "</div></div>" +
       "</div></div>";
 
     const fg = dec.fear_greed || {};
@@ -1177,11 +1357,15 @@
     const surprises = (dec.macro_surprises || []).map(e =>
       '<div class="newsline"><span class="s">[PRINT]</span> ' + esc(e.e) + ": act " + esc(e.act) + " vs fc " + esc(e.fc) + " · " + fmt(e.ago_h, 1) + "h ago</div>").join("");
     const trending = (dec.trending || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("");
-    const sec3 = '<div class="msec"><h3>3 · NEWS + SENTIMENT + MACRO IN THE SAME PROMPT</h3>' +
-      '<div class="dim" style="font-size:10px;margin-bottom:4px">WIRE STATE AT CALL: ' + esc(mmdd_hhmm(dec.news_updated)) +
-      " UTC (30-MIN REFRESH GUARD) · FEAR&amp;GREED " +
-      (fg.value !== undefined ? fg.value + " " + esc(fg.label) + " (streak " + fg.streak_days + "d)" : "—") +
-      (trending ? " · TRENDING: " + trending : "") + "</div>" +
+    const sec3 = '<div class="msec"><h3>3 · ' + (ccy === "USD"
+      ? "MARKET CONTEXT IN THE SAME PROMPT (FUNDING + MOMENTUM — THIS BOOK DOES NOT INJECT NEWS/MACRO)"
+      : "NEWS + SENTIMENT + MACRO IN THE SAME PROMPT") + '</h3>' +
+      (ccy === "USD"
+        ? '<div class="dim" style="font-size:10px;margin-bottom:4px">THE X-PERP ENGINE FEEDS THE MODEL PER-CONTRACT FUNDING AND 30M/4H/7D MOMENTUM. THE NEWS / FEAR&amp;GREED / ECON-CALENDAR BLOCKS BELOW WERE CONTEXT FOR THE RETIRED SPOT ENGINE AND ARE NOT PART OF THIS BOOK\'S DECISION — SHOWN ONLY SO THE REPLAY IS COMPLETE, NOT AS INPUTS THAT DROVE IT.</div>'
+        : '<div class="dim" style="font-size:10px;margin-bottom:4px">WIRE STATE AT CALL: ' + esc(mmdd_hhmm(dec.news_updated)) +
+          " UTC (30-MIN REFRESH GUARD) · FEAR&amp;GREED " +
+          (fg.value !== undefined ? fg.value + " " + esc(fg.label) + " (streak " + fg.streak_days + "d)" : "—") +
+          (trending ? " · TRENDING: " + trending : "") + "</div>") +
       newsLines +
       (macroLines ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">UPCOMING MACRO ≥★★</div>' + macroLines : "") +
       (surprises ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">RECENT SURPRISE PRINTS</div>' + surprises : "") +
@@ -1190,7 +1374,9 @@
     const rejects = (d.pre_entry_rejects || []).map(r =>
       '<div class="dim" style="font-size:10px">' + esc(hhmm(r.ts)) + " — same pair rejected minutes earlier: " + esc((r.fails || []).join("; ")) + " (setup had not matured yet)</div>").join("");
     const sec4 = '<div class="msec"><h3>4 · PRE-ENTRY GAUNTLET — WHAT THIS PAIR SURVIVED BEFORE THE MODEL WAS ASKED</h3>' +
-      '<div class="dim" style="font-size:10.5px">LIQUIDITY FLOOR · SPREAD CAP · RANGE FLOOR · TOP-5 BOOK DEPTH ≥€1.5K · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× STAKE AT ENTRY MOMENT.</div>' +
+      '<div class="dim" style="font-size:10.5px">' + (ccy === "USD"
+        ? "LIQUIDITY FLOOR ≥" + sym + Math.round((P.MIN_VOL24H_USD || 300000) / 1000) + "K · SPREAD CAP ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · RANGE FLOOR ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · TOP-5 BOOK DEPTH ≥" + sym + Math.round(P.MIN_TOP5_DEPTH_USD || 1000) + " · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× NOTIONAL AT ENTRY MOMENT."
+        : "LIQUIDITY FLOOR · SPREAD CAP · RANGE FLOOR · TOP-5 BOOK DEPTH ≥€1.5K · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× STAKE AT ENTRY MOMENT.") + "</div>" +
       (rejects ? '<div style="margin-top:4px">' + rejects + "</div>" : '<div class="dim" style="margin-top:4px;font-size:10px">no rejects logged for this pair in the 12m before entry — it cleared the gauntlet on the first pass</div>') +
       '<div class="mgrid" style="margin-top:6px">' +
       '<div class="mbox"><div class="mk">TP (4× ALL-IN COST)</div><div class="mv">+' + fmt(b.tp_pct) + "%</div></div>" +
@@ -1207,9 +1393,9 @@
     const sec6 = '<div class="msec"><h3>6 · OUTCOME — LEDGER NUMBERS</h3><div class="mgrid">' +
       '<div class="mbox"><div class="mk">ENTRY</div><div class="mv w">' + fmt(t.entry_px, 5) + " @ " + esc(mmdd_hhmm(t.open_ts)) + "</div></div>" +
       '<div class="mbox"><div class="mk">EXIT</div><div class="mv w">' + fmt(t.exit_px, 5) + " @ " + esc(mmdd_hhmm(t.close_ts)) + "</div></div>" +
-      '<div class="mbox"><div class="mk">GROSS</div><div class="mv ' + cls(t.gross_eur) + '">' + sgn(t.gross_eur) + "€</div></div>" +
-      '<div class="mbox"><div class="mk">FEES</div><div class="mv r">−' + fmt(t.fees_eur, 2) + "€</div></div>" +
-      '<div class="mbox"><div class="mk">NET</div><div class="mv ' + cls(t.net_eur) + '">' + sgn(t.net_eur) + "€</div></div>" +
+      '<div class="mbox"><div class="mk">GROSS</div><div class="mv ' + cls(t.gross_eur) + '">' + sgn(t.gross_eur) + sym + "</div></div>" +
+      '<div class="mbox"><div class="mk">FEES</div><div class="mv r">−' + fmt(t.fees_eur, 2) + sym + "</div></div>" +
+      '<div class="mbox"><div class="mk">NET</div><div class="mv ' + cls(t.net_eur) + '">' + sgn(t.net_eur) + sym + "</div></div>" +
       '<div class="mbox"><div class="mk">HELD</div><div class="mv">' + fmt(t.age_min, 0) + " min</div></div>" +
       "</div>" + (dec.context ? '<div class="dim" style="font-size:9.5px;margin-top:8px">STRATEGY CONTEXT SENT TO THE MODEL (VERBATIM EXCERPT):</div><div class="ctx-prompt">' +
         esc(String(dec.context).slice(0, 1500)) + (String(dec.context || "").length > 1500 ? " […]" : "") + "</div>" : "") + "</div>";

@@ -99,7 +99,7 @@
     <div class="body" id="hours-body">—</div>
   </section>
   <section class="panel wide" id="p-scatter">
-    <h2>DECISION SCATTER — EVERY JEV BUY-VOTE vs THE ENGINE BAR <em>last 120 votes · x = margin · y = noul</em></h2>
+    <h2>DECISION SCATTER — EVERY JEV VOTE vs THE ENGINE BAR <em>last 120 votes · x = margin p(chosen)−p(no_trade) · y = noul</em></h2>
     <div class="body" id="scatter-body">—</div>
   </section>
 
@@ -108,18 +108,23 @@
     <div class="body" id="universe-body">—</div>
   </section>
 
+  <!-- NEWS / SENTIMENT / MACRO are OBSERVER context, not live decision inputs.
+       They were written by the retired spot engine (keyless RSS + CoinGecko +
+       alternative.me + econ calendar). The live X-Perp engine injects funding +
+       multi-timeframe momentum only, so these panels are labelled as such rather
+       than implying they gate live entries. -->
   <section class="panel" id="p-news">
-    <h2>NEWS CATALYSTS <em id="news-age"></em></h2>
+    <h2>NEWS CATALYSTS <em id="news-tag">OBSERVER CONTEXT — NOT IN THE LIVE BOOK'S PROMPT</em> <em id="news-age"></em></h2>
     <div class="body" id="news-body">—</div>
   </section>
 
   <section class="panel" id="p-sent">
-    <h2>SENTIMENT / SOCIAL</h2>
+    <h2>SENTIMENT / SOCIAL <em id="sent-tag">OBSERVER CONTEXT — KEYLESS FEEDS</em></h2>
     <div class="body" id="sent-body">—</div>
   </section>
 
   <section class="panel" id="p-macro">
-    <h2>MACRO DESK — NEXT 24H</h2>
+    <h2>MACRO DESK <em id="macro-tag">ECON CALENDAR — RETIRED SPOT ENGINE ONLY</em></h2>
     <div class="body" id="macro-body">—</div>
   </section>
 
@@ -129,7 +134,7 @@
   </section>
 
   <section class="panel" id="p-daily">
-    <h2>DAILY NET P&L (EUR)</h2>
+    <h2 id="daily-h">DAILY NET P&L</h2>
     <div class="body" id="daily-body">—</div>
   </section>
 
