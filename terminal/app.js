@@ -215,9 +215,24 @@
   /* ---------- desk note ---------- */
   function renderDesk(D) {
     const dn = D.desk_note || {};
-    $("desk-model").textContent = "LLM: " + (dn.model || "—") + " · " + (dn.generated ? dn.generated.slice(0, 16).replace("T", " ") + " UTC" : "");
+    // Show the note's age, and flag it when a position changed AFTER the note was
+    // written. Without that, a note saying "flat" sits next to a badge showing a
+    // live position and the two look like one of them is lying, when really the
+    // note is just older. generate.py now refreshes on position change, so this
+    // should rarely fire — but if it does, say so instead of showing a silent
+    // contradiction.
+    const aMin = ageMin(dn.generated);
+    const noteTs = Date.parse(dn.generated || "");
+    const newestOpen = Math.max(0, ...((D.perp || {}).positions || []).map(p =>
+      Date.parse(p.opened_ts || "") || 0));
+    const superseded = newestOpen && noteTs && newestOpen > noteTs;
+    $("desk-model").textContent = "LLM: " + (dn.model || "—") + " · " +
+      (dn.generated ? dn.generated.slice(0, 16).replace("T", " ") + " UTC" : "") +
+      (aMin !== null ? " (" + aMin + "M AGO)" : "") +
+      (superseded ? " · ⚠ PRE-DATES CURRENT POSITION" : "");
     $("desk-note").textContent = dn.desk_note || "AWAITING DESK COMMENTARY…";
-    $("decision-line").textContent = "▸ " + (dn.decision_line || "");
+    $("decision-line").textContent = "▸ " + (dn.decision_line || "") +
+      (superseded ? "  [position opened after this note was written — see the badge and X-Perps panel above]" : "");
   }
 
   /* ---------- perf ---------- */

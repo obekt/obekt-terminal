@@ -1382,10 +1382,22 @@ def build_positions(positions_raw, px):
     return out
 
 
-def build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions=None, perp=None):
-    """LLM desk note via halogen-qwen3.8-flash-next. Cached + rate-limited."""
+def build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions=None,
+                     perp=None, retired=None):
+    """LLM desk note via halogen-qwen3.8-flash-next. Cached + rate-limited.
+
+    `stats`/`equity`/`trips` describe the LIVE book. `retired` carries the retired
+    spot book's OWN frozen stats/equity/trips. They must stay separate: passing the
+    live values into the retired_spot_* payload keys publishes perp USD numbers as
+    spot's final EUR record (it did — "4 closed trades, net -0.59 EUR" instead of
+    132 trades / -21.03 EUR), which is a wrong number, not a missing one.
+    """
     cache = _load_json(COMMENTARY_CACHE, {}) or {}
-    recent = trips[-6:]
+    retired = retired or {}
+    r_stats = retired.get("stats") or {}
+    r_equity = retired.get("equity") or {}
+    r_trips = retired.get("trades") or []
+    recent = r_trips[-6:] if r_trips else trips[-6:]
     perp = perp or {}
     perp_positions = perp.get("positions") or []
     perp_stats = perp.get("stats") or {}
@@ -1415,9 +1427,9 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         },
         # these two are the RETIRED spot book's numbers — relabelled so they are
         # never read as current account state (live_equity above is the truth)
-        "retired_spot_equity_series": equity,
-        "retired_spot_stats": {k: stats.get(k) for k in ("trades_all", "win_rate_pct", "net_all_eur",
-                                                         "profit_factor", "fees_all_eur")},
+        "retired_spot_equity_series": r_equity,
+        "retired_spot_stats": {k: r_stats.get(k) for k in ("trades_all", "win_rate_pct", "net_all_eur",
+                                        "profit_factor", "fees_all_eur")},
         "perp_book": {
             "open_positions": perp_open,
             "usdc_collateral": perp.get("usdc_equity"),
@@ -1462,12 +1474,12 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
                         "today_pnl_pct": perp_stats.get("day_pnl_pct")},
         "retired_spot_record": {
             "status": ENGINE.get("spot_book", {}).get("status"),
-            "trades_closed": stats.get("trades_all"),
-            "win_rate_pct": stats.get("win_rate_pct"),
-            "net_eur": stats.get("net_all_eur"),
-            "net_pct_of_launch": stats.get("net_all_pct"),
-            "profit_factor": stats.get("profit_factor"),
-            "fees_eur": stats.get("fees_all_eur"),
+            "trades_closed": r_stats.get("trades_all"),
+            "win_rate_pct": r_stats.get("win_rate_pct"),
+            "net_eur": r_stats.get("net_all_eur"),
+            "net_pct_of_launch": r_stats.get("net_all_pct"),
+            "profit_factor": r_stats.get("profit_factor"),
+            "fees_eur": r_stats.get("fees_all_eur"),
         },
         # spot closed trips, labelled as history
         "recent_trades_retired_spot": [
@@ -1481,7 +1493,17 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     age = time.time() - (cache.get("ts") or 0)
     if cache.get("hash") == h and age < COMMENTARY_MAX_AGE_S * 4:
         return cache.get("out")
-    if age < COMMENTARY_MIN_INTERVAL_S and cache.get("out"):
+    # The rate limit must only apply when nothing MATERIAL changed. As written it
+    # returned the cached note whenever age < MIN_INTERVAL even with a different
+    # hash, so a position opening left the note claiming "flat, no open positions"
+    # for up to 5 minutes while the badge directly above it showed the live
+    # position — two parts of the same screen contradicting each other. Position
+    # count is the material-change signal; everything else (price drift, tokens)
+    # still respects the interval so we don't hammer the LLM.
+    n_pos_now = len(perp_open or []) + len(positions or [])
+    material = (cache.get("n_pos") != n_pos_now) or (cache.get("breaked") != bool(
+        (perp or {}).get("breaked")))
+    if age < COMMENTARY_MIN_INTERVAL_S and cache.get("out") and not material:
         return cache.get("out")
 
     key = os.environ.get(LLM_KEY_ENV, "")
@@ -1547,7 +1569,11 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         out["model"] = LLM_MODEL
         out["generated"] = _now().isoformat()
         with open(COMMENTARY_CACHE, "w") as f:
-            json.dump({"hash": h, "ts": time.time(), "out": out}, f)
+            json.dump({"hash": h, "ts": time.time(), "out": out,
+                       # recorded so the next build can tell a MATERIAL change
+                       # (position opened/closed, breaker tripped) from noise and
+                       # skip the rate limit only in that case.
+                       "n_pos": n_pos_now, "breaked": bool((perp or {}).get("breaked"))}, f)
         return out
     except Exception as ex:
         print("LLM commentary failed: %s" % ex, file=sys.stderr)
@@ -1814,7 +1840,18 @@ def build():
     ENGINE["spot_book"]["win_rate_pct"] = spot_stats.get("win_rate_pct")
     ENGINE["spot_book"]["fees_eur"] = spot_stats.get("fees_all_eur")
 
-    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips, positions, perp)
+    # One frozen record, used by BOTH the retired panels and the desk-note payload.
+    retired_spot = {
+        "trades": spot_trips[-40:][::-1],
+        "stats": spot_stats,
+        "cum_pnl_pct": spot_stats.get("cum_pnl_pct"),
+        "jev_latest": spot_jev_latest,
+        "universe": spot_universe,
+        "equity": spot_equity,
+    }
+
+    desk = build_commentary(jev_latest, stats, equity, news, sentiment, trips,
+                            positions, perp, retired=retired_spot)
 
     data = {
         "generated": _now().isoformat(),
@@ -1837,15 +1874,9 @@ def build():
         "equity": equity,
         "stats": stats,
         # Retired spot book: its own frozen ledger, explicitly namespaced so no
-        # panel can mistake it for live state.
-        "retired_spot": {
-            "trades": spot_trips[-40:][::-1],
-            "stats": spot_stats,
-            "cum_pnl_pct": spot_stats.get("cum_pnl_pct"),
-            "jev_latest": spot_jev_latest,
-            "universe": spot_universe,
-            "equity": spot_equity,
-        },
+        # panel can mistake it for live state. Same object the desk note was given
+        # — one definition, so the two can never disagree.
+        "retired_spot": retired_spot,
         "funnel": funnel,
         "scatter": scatter,
         "positions": positions,
