@@ -294,6 +294,31 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   engine importing the spot plumbing; USDC collateral; USDC REMOVED from the spot
   engine's STABLES sweep list (it would have sold the perp collateral every cycle).
   v4.1: perp CONF_FLOOR 0.50→0.40 burn-in after 15/16 calls were blocked.
+- **v4.5/v4.6-perp (10-15)**: full-capital sizing (98% of collateral) was tried,
+  then CONTAINED back to a $25/trade burn-in cap after 1W/8L (-2.5% in 10h) at
+  full size. Kill-gate written into the engine: at n>=30 closed perp trades run a
+  P&L replay; if no edge, close the book and park the collateral in savings —
+  pre-committed, no re-litigating on a losing streak.
+- **v4.7-perp (10-16)**: Jev state enrichment — the perp state was THINNER than
+  the retired spot state. Added: BTC regime (alts are beta to BTC; measured on
+  our own ledger: BTC-aligned entries +0.07%/trade vs -0.17% against), own
+  recent-trade memory (the engine re-entered the same instrument 12x overnight
+  into identical stops because the code-level cooldown was invisible to the
+  model), news catalysts, macro calendar (economic-calendar before/after params
+  are INVERTED — naive filters silently return nothing), per-pair rubik
+  ls_ratio + taker_buy_share. No thresholds touched.
+- **v4.8/v4.9-perp (10-16/18)**: the enrichment shifted Jev's conf distribution
+  down (pick avg 0.45->0.28, max 0.85->0.55 over 700+ calls) while directional
+  noul held — a floor calibrated on the OLD distribution became unreachable
+  (36/36 blocked; 10 attempts in 60h). Gates re-baselined on the measured new
+  distribution (CONF_FLOOR 0.20, MARGIN_BAR 0.15, MIN_VOL30_PCT 0.30 for quiet
+  tape) + IOC-taker fallback for unfilled maker entries, OCO re-anchored to the
+  real fill, entry_type logged. LESSON (third instance): never keep a threshold
+  calibrated on a different decision-metric distribution — re-measure the
+  distribution, then re-derive the gate; distribution re-calibration is NOT the
+  same as outcome-mining. The maker-only rule was a SPOT-fee lesson (0.2%
+  taker); at 0.05% perp taker, 80% of signals dying unfilled costs more than
+  crossing. Calibration sample restarts at each such change.
 - **Observability lesson (10-15)**: the deck hardcoded gate thresholds
   (margin≥0.25, cooldowns 15/30) and drifted from the engine twice. UI must PARSE
   thresholds from engine source, never hardcode. Also: account-level P&L must be
