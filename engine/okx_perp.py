@@ -25,12 +25,13 @@ Modes: status | decide | manage | cycle   (+ --dry-run: full decision path,
 zero order placement — logs perp_dry_open instead of trading).
 """
 import json, os, sys, time, datetime, decimal
+import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.5-perp"
+ENGINE_VERSION = "v4.9-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -60,7 +61,10 @@ SL_CAP_PCT = 0.80
 ARM_TP_RATIO = 0.40            # trail geometry scaled off TP (v3.5 proven ratios)
 GB_TP_RATIO = 0.23
 FLOOR_TP_RATIO = 0.07
-MIN_VOL30_PCT = 0.35           # realized 30m range reachability gate
+MIN_VOL30_PCT = 0.30   # v4.9: 450 rejects since 10-17 had median vol30 0.27;
+                       # 0.35 was calibrated on a moving tape — weekend books sit
+                       # 0.25-0.35. 0.30 keeps the reachability logic vs the
+                       # ~0.6% TP while admitting the bulk of the opportunity set.           # realized 30m range reachability gate
 
 # ---------------- risk / sizing ----------------
 PERP_LEV = "1"                 # isolated leverage; 1x = margin == notional
@@ -74,7 +78,14 @@ PERP_LEV = "1"                 # isolated leverage; 1x = margin == notional
 # order is rejected for insufficient margin — 0.98 is the practical ceiling.
 # Re-introduce a buffer only if PERP_LEV is ever raised above 1.
 MAX_NOTIONAL_FRAC = 0.98       # of USDC equity — deploy (nearly) all of it
-MAX_NOTIONAL_USD = 1000.0      # NOT a capital cap (equity is ~$22); a bug guard
+# BURN-IN SIZE CAP (v4.6, 10-15, CTO decision): back to $25/trade until ~30 closed
+# perp trades exist. The 0.40 CONF_FLOOR burn-in was approved as CONTAINED
+# (worst bad trade ~-$0.25); same-day full-capital sizing broke that containment
+# (n=9: 1W/8L, -$3.41 in 10h, the three conf<0.50 entries each ~-$0.48). At $25
+# the sample still accrues at ~1/5 the burn. GATE: at n>=30 run pnl_replay; if no
+# edge, close the book and park USDC in flexible savings — do NOT re-size up
+# before that review.
+MAX_NOTIONAL_USD = 25.0        # burn-in cap (see above); also a bug guard
                                # against a garbage usdc_equity() read
 MAX_OPEN = 1
 MAX_ENTRIES_PER_CYCLE = 1
@@ -93,9 +104,25 @@ LIQ_BUFFER_PCT = 15.0          # force-close if price comes within 15% of liqPx
 # PROTOCOL: after ~30 closed perp trades run pnl_replay and set the real floor
 # from PERP evidence (exactly how spot v3.8 was derived). Do NOT tune again
 # before that sample.
-CONF_FLOOR = 0.40
+# v4.8 (10-16) FLOOR RE-BASELINED ON THE ENRICHED-STATE DISTRIBUTION: v4.7
+# (BTC regime, trade memory, news, macro, rubik) shifted Jev conf down globally
+# (avg 0.45->0.26, max 0.85->0.39 over 36 calls) while directional noul held
+# (0.497->0.51, 19/21 picks clear NOUL_BAR). The 0.40 floor then blocked 36/36
+# — a dead gate. Re-measured grid on those 36 calls: CONF_FLOOR 0.30 +
+# MARGIN_BAR 0.20 restores the pre-v4.7 flow rate (~14%), not looser. Same
+# lesson as v4.1: never keep a threshold calibrated on a different decision-
+# metric distribution. Containment unchanged (5/trade cap, worst -bash.09).
+# v4.9 (10-18) RE-BASELINED AGAIN ON THE ENRICHED DISTRIBUTION: v4.8's 0.30/0.20
+# was set from the FIRST 36 post-enrichment calls (a chop hour) and yielded 10
+# order attempts / 2 fills / 3 closed trades in 60h = 0.05 trades/day — the n>=30
+# review could never accrue. Measured over 702 calls / 115 picks (pick conf avg
+# 0.28, max 0.55; model chooses no_trade 88%): grid says CF 0.20 + MB 0.15 gives
+# ~6% flow (~8-9 attempts/day), 4x the pre-v4.7 rate at 1/5 the stake. This is
+# distribution re-calibration, not outcome-mining: NO closed-trade outcomes were
+# used to pick the thresholds. Calibration count restarts at v4.9.
+CONF_FLOOR = 0.20
 CONF_BAR = 0.50
-MARGIN_BAR = 0.30
+MARGIN_BAR = 0.15   # v4.9: re-baselined with CONF_FLOOR (see above)
 NOUL_BAR = 0.45
 FILL_WAIT_S = 25
 TIME_STOP_MIN = 30
@@ -155,6 +182,110 @@ def bracket_for(spread_pct):
 def usdc_equity():
     b = J.balances().get("USDC") or {}
     return float(b.get("cash", 0)) + float(b.get("frozen", 0)) or float(b.get("avail", 0))
+
+# ---------------- v4.7 decision-context enrichment ----------------
+# WHY (10-15, CTO decision after n=26 review): the perp Jev state was THINNER
+# than the retired spot state. Measured: BTC-aligned entries +0.07%/trade
+# (6W/12L) vs against-BTC entries -0.17%/trade (3W/16L), and the engine
+# re-entered NEAR 12x overnight into the same -0.3% stop with no memory of it.
+# Fixes: btc_regime, own recent trade results, news catalysts, macro calendar,
+# rubik order-flow per pair. NOT a threshold change — CONF_FLOOR/gates untouched.
+# Calibration counter for the n>=30 review restarts at this version.
+
+BTC_PROXY = "BTC-USDT"          # spot proxy; BTC XPERP ids rotate with expiry
+
+def btc_regime():
+    """Market regime the alts are beta'd to. Public candles, no auth."""
+    try:
+        c5 = J.candles(BTC_PROXY, "5m", 7)
+        c1h = J.candles(BTC_PROXY, "1H", 5)
+        last = c5[-1]["c"]
+        chg30 = round((last / c5[0]["c"] - 1) * 100, 3) if c5 and c5[0]["c"] else None
+        chg4h = round((last / c1h[0]["c"] - 1) * 100, 2) if c1h and c1h[0]["c"] else None
+        out = {}
+        if chg30 is not None:
+            out["btc_chg_30m_pct"] = chg30
+        if chg4h is not None:
+            out["btc_chg_4h_pct"] = chg4h
+        return out or None
+    except Exception:
+        return None
+
+def recent_trade_memory(n=8):
+    """The engine's own last exits, so Jev stops re-entering a losing setup.
+    Source: risk_state exits map (inst:side -> ts, upc), newest first."""
+    try:
+        r = load_risk()
+        rows = []
+        for k, v in (r.get("exits") or {}).items():
+            inst, _, side = k.partition(":")
+            ts = datetime.datetime.fromisoformat(v["ts"])
+            ago = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 60
+            rows.append({"inst": inst.split("-")[0], "side": side,
+                         "upc_pct": v.get("upc"), "ago_min": round(ago)})
+        rows.sort(key=lambda x: x["ago_min"])
+        return rows[:n] or None
+    except Exception:
+        return None
+
+def news_catalysts():
+    """Keyless RSS headlines; refresh the file if older than 35 min
+    (the retired spot cycle used to keep it fresh)."""
+    try:
+        p = os.path.join(HERE, "catalyst.json")
+        d = json.load(open(p))
+        upd = datetime.datetime.fromisoformat(d.get("updated", "2000-01-01T00:00+00:00"))
+        age_min = (datetime.datetime.now(datetime.timezone.utc) - upd).total_seconds() / 60
+        if age_min > 35:
+            subprocess.run([sys.executable, os.path.join(HERE, "news_feed.py")],
+                           timeout=60, capture_output=True)
+            d = json.load(open(p))
+        return d.get("catalysts", [])[:5] or None
+    except Exception:
+        return None
+
+def macro_calendar():
+    """Upcoming 24h imp>=2 events + last-3h surprises (INVERTED before/after
+    params — see okx-trading skill; copied from the spot cycle)."""
+    try:
+        now_ms = int(time.time() * 1000)
+        H = 3600000
+        out = {}
+        cal = J.api("GET", f"/api/v5/public/economic-calendar?before={now_ms}&after={now_ms + 24 * H}&limit=10")
+        ev = []
+        for c in cal:
+            try:
+                imp = int(c.get("importance") or 0)
+            except Exception:
+                imp = 0
+            if imp < 2 or not c.get("date"):
+                continue
+            dt = int(c["date"])
+            if now_ms <= dt < now_ms + 24 * H:
+                ev.append({"e": c.get("event"), "ccy": c.get("ccy") or "$", "imp": imp,
+                           "in_h": round((dt - now_ms) / H, 1)})
+        ev.sort(key=lambda x: x["in_h"])
+        if ev:
+            out["macro_events_24h"] = ev[:5]
+        cal = J.api("GET", f"/api/v5/public/economic-calendar?after={now_ms}&before={now_ms - 3 * H}&limit=30")
+        rel = []
+        for c in cal:
+            try:
+                imp = int(c.get("importance") or 0)
+            except Exception:
+                imp = 0
+            act, fc = c.get("actual") or "", c.get("forecast") or ""
+            if imp < 2 or not act or not fc or act == fc or not c.get("date"):
+                continue
+            dt = int(c["date"])
+            rel.append({"e": c.get("event"), "imp": imp, "act": act, "fc": fc,
+                        "ago_h": round((now_ms - dt) / H, 1)})
+        rel.sort(key=lambda x: x["ago_h"])
+        if rel:
+            out["macro_released_3h_surprises"] = rel[:4]
+        return out or None
+    except Exception:
+        return None
 
 def funding_rate(inst):
     try:
@@ -361,8 +492,49 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
             J.cancel_order(inst, o["ordId"])
         if acc >= float(ins.get("minSz") or 1):
             od = J.order_detail(inst, o["ordId"])
+            od["entry_type"] = "maker_partial"
             return od, "partial"
+        # v4.9 IOC-TAKER FALLBACK: maker-only was the v3.8 SPOT lesson (0.2% taker
+        # made chasing EV-negative). Perp taker is 0.05% (rt 0.10% vs 0.07% maker):
+        # 8 of 10 v4.8 attempts died unfilled = signals wasted. One IOC at the
+        # reference px, bracket re-anchored to the ask (worst case = market px),
+        # so the OCO protects the REAL fill level. If the IOC doesn't fill, the
+        # tape ran away -> let it go, no trade (same as before, logged).
+        try:
+            if not dry:
+                t = J.ticker(inst)
+                ref = float(t["ask"] if entry_side == "buy" else t["bid"])
+                tick_r = float(ins["tickSz"])
+                algo2 = {k: v for k, v in algo.items()}
+                algo2["tpTriggerPx"] = str(rstep(ref * (1 + tp_mult * bk["tp_pct"] / 100), tick_r, down=(side == "short")))
+                algo2["slTriggerPx"] = str(rstep(ref * (1 - tp_mult * bk["sl_pct"] / 100), tick_r, down=(side == "long")))
+                body2 = {k: v for k, v in body.items()}
+                body2["ordType"] = "ioc"
+                body2["px"] = str(rstep(ref, tick_r, down=(entry_side == "buy")))
+                body2["attachAlgoOrds"] = [algo2]
+                d2 = J.api("POST", "/api/v5/trade/order", body2)
+                o2 = d2[0] if d2 else {}
+                if o2.get("sCode") in ("0", None):
+                    od2 = J.wait_fill(inst, o2["ordId"], 10)
+                    st2 = od2.get("state")
+                    acc2 = float(od2.get("accFillSz") or 0)
+                    if st2 == "filled" or acc2 >= float(ins.get("minSz") or 1):
+                        if st2 in ("live", "partially_filled"):
+                            J.cancel_order(inst, o2["ordId"])
+                        od2 = J.order_detail(inst, o2["ordId"])
+                        od2["entry_type"] = "taker_ioc"
+                        logrec({"event": "perp_entry_taker_fallback", "inst": inst,
+                                "side": side, "ref": ref})
+                        return od2, ("partial" if st2 == "partially_filled" else None)
+                    logrec({"event": "perp_entry_ioc_unfilled", "inst": inst, "side": side})
+                else:
+                    logrec({"event": "perp_entry_ioc_err", "inst": inst,
+                            "err": f"{o2.get('sCode')}: {o2.get('sMsg')}"[:120]})
+        except Exception as e:
+            logrec({"event": "perp_entry_ioc_err", "inst": inst, "err": str(e)[:120]})
+        od["entry_type"] = "maker_unfilled"
         return od, "unfilled"
+    od["entry_type"] = "maker"
     return od, None
 
 def close_perp_market(inst, side, contracts):
@@ -532,6 +704,15 @@ def decide():
         selrow = next((c for c in univ.get("selected", []) if c["inst"] == inst), {})
         f["bracket"] = selrow.get("bracket") or bracket_for(f["spread_pct"])
         f["funding_bps"] = selrow.get("funding_bps")
+        # v4.7: crowd positioning + taker flow (public rubik, same as spot had)
+        try:
+            ccy = inst.split("-")[0]
+            rs = J.rubik_sentiment(ccy)
+            for k in ("ls_ratio", "taker_buy_share"):
+                if k in rs:
+                    f[k] = rs[k]
+        except Exception:
+            pass
         tradeable[inst] = f
     if not tradeable:
         rec["why"] = "all pairs gated"
@@ -549,7 +730,20 @@ def decide():
                     "range30_pos_pct (0=30m low, 100=30m high), bars_up_of_6, chg_4h_pct, "
                     "chg_7d_pct, funding_bps (positive = longs pay shorts; heavily positive "
                     "funding with a stretched range30_pos = crowded long, short-side edge; "
-                    "negative funding = crowded short). Bracket: tp_pct/sl_pct/trail numbers "
+                    "negative funding = crowded short), ls_ratio (crowd long/short accounts, "
+                    ">1 = crowd long) and taker_buy_share (>0.5 = net aggressive buying). "
+                    "btc_chg_30m_pct / btc_chg_4h_pct: the whole alt complex is beta to BTC — "
+                    "a LONG against a falling BTC or a SHORT against a rising BTC is a "
+                    "low-quality setup regardless of the pair's own numbers; measured on our "
+                    "own ledger, BTC-aligned entries earned +0.07%/trade vs -0.17%/trade "
+                    "against BTC. our_recent_trades: OUR OWN last exits (instrument, side, "
+                    "result, minutes ago) — if the same inst+side was stopped out recently, "
+                    "re-entering it is repeating a setup that already failed; require a "
+                    "materially changed picture, else no_trade. news_catalysts and "
+                    "macro_events_24h / macro_released_3h_surprises: headlines and high-"
+                    "impact macro prints (a surprise print in the last hours is the current "
+                    "tape driver; a big event within 1-2h means headline risk over a 45-min "
+                    "hold). Bracket: tp_pct/sl_pct/trail numbers "
                     "are the exit geometry your trade will be managed with. "
                     "LONG setups: pullback in uptrend (chg_7d>0, mild chg_30 dip, range30_pos "
                     "mid), real buying. SHORT setups: blow-off into 30m high with chg_7d flat/"
@@ -563,6 +757,16 @@ def decide():
         "pairs": {i: {k: v for k, v in f.items() if k not in ("bid", "ask", "last")}
                   for i, f in tradeable.items()},
     }
+    # v4.7 enrichment — each block optional; failures degrade to absent key
+    for blk in (btc_regime(), macro_calendar()):
+        if blk:
+            state.update(blk)
+    mem = recent_trade_memory()
+    if mem:
+        state["our_recent_trades"] = mem
+    news = news_catalysts()
+    if news:
+        state["news_catalysts"] = news
     questions = {}
     crit = {}
     slug = {}
@@ -675,6 +879,7 @@ def decide():
     logrec({"event": "perp_open", "inst": inst, "side": side, "contracts": contracts,
             "notional_usd": round(notional, 2), "fill_px": fill_px, "conf": conf,
             "margin": margin, "noul": noul, "algo_ok": algo_ok, "realized_fee": fee,
+            "entry_type": od.get("entry_type"),
             "bracket": bk})
     rec.update({"acted": True, "inst": inst, "side": side, "contracts": contracts,
                 "fill_px": fill_px, "notional_usd": round(notional, 2), "algo_ok": algo_ok})
