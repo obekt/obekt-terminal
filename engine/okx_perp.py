@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.9-perp"
+ENGINE_VERSION = "v4.9.1-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -503,7 +503,10 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
         try:
             if not dry:
                 t = J.ticker(inst)
-                ref = float(t["ask"] if entry_side == "buy" else t["bid"])
+                ref_s = t.get("askPx") if entry_side == "buy" else t.get("bidPx")
+                ref = float(ref_s or 0)
+                if ref <= 0:
+                    raise ValueError("IOC ref px missing from ticker")
                 tick_r = float(ins["tickSz"])
                 algo2 = {k: v for k, v in algo.items()}
                 algo2["tpTriggerPx"] = str(rstep(ref * (1 + tp_mult * bk["tp_pct"] / 100), tick_r, down=(side == "short")))

@@ -319,6 +319,18 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   same as outcome-mining. The maker-only rule was a SPOT-fee lesson (0.2%
   taker); at 0.05% perp taker, 80% of signals dying unfilled costs more than
   crossing. Calibration sample restarts at each such change.
+- **v4.9.1-perp hotfix (10-20)**: the v4.9 IOC fallback NEVER FIRED — every
+  attempt logged `perp_entry_ioc_err err="'ask'"` (22 in 2.5 days). The helper
+  returns the RAW venue ticker row (`askPx`/`bidPx`); the new code read
+  `t["ask"]` → KeyError, swallowed by the surrounding try/except into a log
+  event nobody watched, silently degrading to the old unfilled=no-trade path.
+  TWO RULES: (1) an exception handler that LOGS instead of raising hides a dead
+  code path — after deploying any new fallback, grep the log for its error
+  event within the first hours; "no errors" and "every error the same KeyError"
+  are different states. (2) Verify raw-vs-normalized dict keys when reusing a
+  fetch helper: the engine carried BOTH shapes (the entry path normalizes to
+  bid/ask at fetch time; the raw ticker call does not), and the new block
+  assumed the wrong one. Fixed to askPx/bidPx + a ref<=0 guard.
 - **Observability lesson (10-15)**: the deck hardcoded gate thresholds
   (margin≥0.25, cooldowns 15/30) and drifted from the engine twice. UI must PARSE
   thresholds from engine source, never hardcode. Also: account-level P&L must be
