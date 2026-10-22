@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.9.1-perp"
+ENGINE_VERSION = "v4.9.3-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -41,8 +41,14 @@ DRY = "--dry-run" in sys.argv
 # ---------------- universe ----------------
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "DOGE", "OKB", "ZEC", "SUI", "LINK",
                 "LTC", "ADA", "AVAX", "TON", "DOT", "UNI", "AAVE", "NEAR", "HYPE"}
+# 10-21 (v4.9.2): NEAR excluded — 26 closes, 31% WR, sum -1.49% = over half the
+# book's -2.73% total; 4 same-day re-entries into one stop. Same bleed as spot
+# NEAR-EUR (excluded v3.10, only OOS-robust filter there). Containment, not edge:
+# non-NEAR half is still -1.24%/27 trades. Kill-gate count stays anchored to v4.9 (10-18).
+UNIVERSE_EXCLUDE = {"NEAR"}
 # Stock/commodity X-Perps (AAPL, TSLA, GOLD, ...) are explicitly NOT traded.
-MAX_JEV_PAIRS = 4
+MAX_JEV_PAIRS = 6  # v4.9.3 (10-21, operator directive): widen opportunity set.
+                     # WATCH: input_tokens was ~2840 at 4 pairs; budget alarm 3400.
 MIN_DAY_RANGE_PCT = 1.5        # X-Perp majors move less than EUR small caps
 MIN_VOL24H_USD = 300_000
 MIN_TOP5_DEPTH_USD = 1_000     # tiny stakes ($8-16) but never enter a ghost book
@@ -311,6 +317,8 @@ def select_universe(force=False):
     cands = []
     for ins in perps:
         iid = ins["instId"]
+        if iid.split("-")[0] in UNIVERSE_EXCLUDE:
+            continue
         try:
             t = J.ticker(iid)
             last = float(t["last"]); open24 = float(t.get("open24h") or last)
