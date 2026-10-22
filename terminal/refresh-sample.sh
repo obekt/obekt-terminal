@@ -48,12 +48,18 @@ fetch() {  # fetch <relpath> <local-dest>
   fi
 }
 
+fetch_dir() {  # fetch_dir <reldir> <local-dest> — scp >=9.0 (SFTP backend)
+  # rejects "dir/." sources ("not a regular file"), so directories go via rsync,
+  # which handles both local paths and user@host: sources.
+  rsync -az "$SRC/$1/" "$2/"
+}
+
 echo "[1/6] staging from $SRC"
 mkdir -p "$STAGE/dossiers"
 fetch data.js    "$STAGE/data.js"
 fetch data.json  "$STAGE/data.json"
 fetch og.png     "$STAGE/og.png"
-fetch dossiers/. "$STAGE/dossiers/"
+fetch_dir dossiers "$STAGE/dossiers"
 ndoss=$(find "$STAGE/dossiers" -name '*.json' | wc -l | tr -d ' ')
 echo "       staged data.js, data.json, og.png, $ndoss dossiers ($DEST/ untouched so far)"
 

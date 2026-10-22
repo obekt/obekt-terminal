@@ -212,7 +212,7 @@
       cell(spotRetired ? "PERP EQUITY (LIVE)" : "EQUITY", "$" + fmt(P.usdc_equity, 2),
         spotRetired ? "USDC collateral · 1x isolated" : "spot EUR + $" + fmt(P.usdc_equity) + " perp USDC",
         "w", true) +
-      cell("TODAY", sgn(todayPct) + "%", todayTrades + " trades closed", todayCls, true) +
+      cell("TODAY", sgn(todayPct) + "%", todayTrades + " trades closed \u00b7 UTC day", todayCls, true) +
       cell(spotRetired ? "ALL-TIME — X-PERPS" : "ALL-TIME", allTimeV, allTimeSub,
         cls(spotRetired ? ps.net_all_pct : s.net_all_pct)) +
       cell("LATEST VOTE", lvNoTrade ? "FLAT" : lvArrow + lvChoice.replace("BUY_", "").replace("SHORT_", "").replace("LONG_", ""),

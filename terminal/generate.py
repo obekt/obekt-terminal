@@ -201,14 +201,28 @@ def _engine_versions():
     return {"spot": _src_version("okx_jev.py"), "perp": _src_version("okx_perp.py")}
 
 
-_VERSIONS = _engine_versions()
+_VERSIONS_CACHE = {"ts": 0.0, "val": None}
+
+
+def _versions():
+    """Versions read fresh per build (30s cache). This used to be a module-level
+    constant: serve.py keeps this module imported across its 45s rebuilds, so the
+    header version froze at whatever the engine source said when the CONTAINER
+    STARTED (observed 10-22: header v4.8-perp while the engine ran v4.9.3-perp and
+    the build-time perp.engine field was correct — the deck contradicted itself)."""
+    now = time.time()
+    if _VERSIONS_CACHE["val"] is None or now - _VERSIONS_CACHE["ts"] > 30:
+        _VERSIONS_CACHE["val"] = _engine_versions()
+        _VERSIONS_CACHE["ts"] = now
+    return _VERSIONS_CACHE["val"]
 
 
 def _engine_version():
     """Combined version across both engines (spot okx_jev.py + perp okx_perp.py).
     Read from source = single source of truth; never hardcode (it drifts)."""
-    spot = _VERSIONS["spot"]
-    perp = _VERSIONS["perp"]
+    v = _versions()
+    spot = v["spot"]
+    perp = v["perp"]
     # Live book first. If spot is retired, saying "SPOT vX + PERP vY" implies two
     # running engines when one is switched off. Driven by SPOT_BOOK_RETIRED so the
     # label can never disagree with the rest of the deck.
@@ -233,7 +247,8 @@ def _engine_header():
     payload, and the spot version is preserved in spot_book.version and printed in
     the retired record panel.
     """
-    live = _VERSIONS["perp"] or _VERSIONS["spot"] or "unknown"
+    v = _versions()
+    live = v["perp"] or v["spot"] or "unknown"
     mode = "LIVE · TWO-WAY" if SPOT_BOOK_RETIRED else "LIVE · TWO-WAY + SPOT"
     return "%s · OKX EUROPE (EEA) X-PERPS · %s" % (live, mode)
 
@@ -291,7 +306,7 @@ ENGINE = {
         # produced it. This is where the spot version lives now that the header
         # names only the LIVE engine — removing it from the header must not mean
         # losing it from the deck.
-        "version": _VERSIONS["spot"],
+        "version": _versions()["spot"],
         "why": ("Capital consolidated into the X-Perp book at operator direction. The spot "
                 "EUR book was long-only (no way to profit from a decline) and carried ~0.25% "
                 "round-trip fees vs the perp book's ~0.07%. Engine code and full history "
