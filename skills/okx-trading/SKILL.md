@@ -331,6 +331,41 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   fetch helper: the engine carried BOTH shapes (the entry path normalizes to
   bid/ask at fetch time; the raw ticker call does not), and the new block
   assumed the wrong one. Fixed to askPx/bidPx + a ref<=0 guard.
+- **v4.9.2-perp (10-21)**: one instrument excluded from the universe
+  (`UNIVERSE_EXCLUDE`, filtered at the top of the scan loop OUTSIDE the
+  try-block so a bad name can never be swallowed by the scan's error handler).
+  Evidence: it was ~half the book's closes at 31% WR and carried over half the
+  total loss; four same-day re-entries into one stop despite the model seeing
+  its own recent exits in the prompt. Precedent: the same instrument was the
+  only out-of-sample-robust exclusion in the spot replay. HONEST CAVEAT stated
+  to the operator: containment, not edge — the remaining book was still
+  negative per-trade, only slightly less bad than the excluded name. A
+  universe filter is not a decision-metric change, so the calibration window
+  and review gate were NOT restarted; expect slower sample accrual, making the
+  DATE gate bind before the n gate.
+- **v4.9.3-perp (10-21)**: `MAX_JEV_PAIRS` 4→6 (operator: "more Jev calls,
+  this is cheap") — widen the opportunity set per model call. Diagnosis behind
+  it: polling RATE is not the throughput bottleneck (state features come from
+  5-min candles, so a faster timer mostly re-sends identical state; the model
+  itself says no_trade ~88%); pairs-per-call is the lever that changes how
+  many opportunities are SEEN. Measured immediately: on a quiet tape the
+  day-range floor admits ~3 candidates, so the 6-cap only pays off in lively
+  tape. Token math: input ~2.1-2.4k at 2 pairs, ~3.5k projected at 6 — under
+  budget; an overnight watchdog alarms above 5k and is authorized to roll the
+  cap back without asking.
+- **Version freshness needs LAZY reads, not just source-parsing (10-22)**: the
+  deck parsed ENGINE_VERSION from engine source (single-source rule) but stored
+  it in a MODULE-LEVEL constant; the server keeps the module imported across
+  its 45s rebuilds, so the header froze at the container-start version — it
+  displayed a version three releases old while the panel fed at build time
+  showed the current one (self-contradicting deck). Any "read from source of
+  truth" value inside a long-lived process must be re-read per build (cheap TTL
+  cache), never snapshotted at import. The SOURCE was live; the READER was
+  frozen. Corollary from the same session: when a displayed number looks
+  wrong, check the semantic frame too — the "0 trades today" that prompted the
+  audit was CORRECT (the day counter is UTC, the operator's midnight had
+  passed; the hero cell now says "· UTC day"), and it led to the panel that
+  was actually lying.
 - **Observability lesson (10-15)**: the deck hardcoded gate thresholds
   (margin≥0.25, cooldowns 15/30) and drifted from the engine twice. UI must PARSE
   thresholds from engine source, never hardcode. Also: account-level P&L must be
