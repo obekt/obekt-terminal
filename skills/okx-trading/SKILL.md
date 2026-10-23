@@ -353,6 +353,23 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   tape. Token math: input ~2.1-2.4k at 2 pairs, ~3.5k projected at 6 — under
   budget; an overnight watchdog alarms above 5k and is authorized to roll the
   cap back without asking.
+- **v4.9.4-perp (10-23)**: UNIVERSE-SCAN UNIT BUGS — the real root cause of the
+  "no trades" complaints (40h / 184 model calls with zero direction picks).
+  (1) The 24h-turnover field is BASE-CCY on this venue's perp tickers, not USD
+  as the code comment claimed: the BTC perp showed 4,066 (= 4,066 BTC ≈ $330M)
+  and failed the $300k floor — every expensive coin was structurally invisible
+  since launch while cheap coins passed 10-12x overstated. (2) Order-book size
+  is in CONTRACTS: top-5 depth = px×sz missed ×ctVal, reading BTC's real
+  $28.8k book as $288M and under-reading 10-ctVal books 10x — the phantom-depth
+  guard measured noise. Fixes: vol_usd = volCcy24h × last; depth ×= ctVal.
+  Result: candidates 2-3 → 11/17, first-ever LTC/AVAX/LINK selections, and the
+  depth floor finally real (SUI passes at $1,313). FOURTH instance of the
+  unit-denomination bug class on this project (fee ccy per book, P&L label
+  mixing, now volume+depth). RULE: when a liquidity filter rejects an obviously
+  liquid instrument, suspect UNIT MISMATCH before market structure — verify one
+  raw API row (vol24h=contracts, volCcy24h=base ccy, book sz=contracts, ctVal
+  per instrument). Known gap noted: the entry-time depth re-check constant
+  exists but is unwired on the perp side; scan depth can be 10 min stale.
 - **Version freshness needs LAZY reads, not just source-parsing (10-22)**: the
   deck parsed ENGINE_VERSION from engine source (single-source rule) but stored
   it in a MODULE-LEVEL constant; the server keeps the module imported across

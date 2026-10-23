@@ -31,7 +31,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.9.3-perp"
+ENGINE_VERSION = "v4.9.4-perp"
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -324,20 +324,27 @@ def select_universe(force=False):
             last = float(t["last"]); open24 = float(t.get("open24h") or last)
             hi = float(t.get("high24h") or last); lo = float(t.get("low24h") or last)
             bid = float(t.get("bidPx") or 0); ask = float(t.get("askPx") or 0)
-            volq = float(t.get("volCcy24h") or 0)  # quote (USD) turnover
+            # v4.9.4 UNIT FIX: volCcy24h is BASE-ccy, NOT USD (measured: BTC perp
+            # 4,066 BTC = ~$330M turnover read as "$4,066" -> every expensive coin
+            # was rejected by the $300k floor; DOGE passed 12x overstated).
+            vol_usd = float(t.get("volCcy24h") or 0) * last
             if last <= 0 or bid <= 0 or ask <= 0:
                 continue
             spread = (ask - bid) / ask * 100
             day_range = (hi - lo) / open24 * 100
-            if spread > MAX_SPREAD_PCT or day_range < MIN_DAY_RANGE_PCT or volq < MIN_VOL24H_USD:
+            if spread > MAX_SPREAD_PCT or day_range < MIN_DAY_RANGE_PCT or vol_usd < MIN_VOL24H_USD:
                 continue
             b = J.api("GET", f"/api/v5/market/books?instId={iid}&sz=5", private=False)[0]
-            depth = sum(float(l[0]) * float(l[1]) for l in b.get("bids", [])[:5])
+            # v4.9.4 UNIT FIX: book sz is CONTRACTS; notional = px * sz * ctVal.
+            # (BTC top-5 read $288M vs $28.8k real at ctVal 0.0001; DOGE-class
+            # books were under-read 10x at ctVal 10.) CT-EUR phantom-depth class.
+            ct = float(ins.get("ctVal") or 1)
+            depth = sum(float(l[0]) * float(l[1]) for l in b.get("bids", [])[:5]) * ct
             if depth < MIN_TOP5_DEPTH_USD:
                 continue
             cands.append({"inst": iid, "base": iid.split("-")[0], "day_range_pct": round(day_range, 2),
                           "chg24h_pct": round((last / open24 - 1) * 100, 2),
-                          "vol24h_usd": round(volq), "spread_pct": round(spread, 4),
+                          "vol24h_usd": round(vol_usd), "spread_pct": round(spread, 4),
                           "top5_depth_usd": round(depth), "bracket": bracket_for(spread),
                           "funding_bps": funding_rate(iid)})
         except Exception as e:
