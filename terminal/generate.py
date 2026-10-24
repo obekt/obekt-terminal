@@ -1885,6 +1885,15 @@ def build():
     spot_universe = (_load_json(os.path.join(BASE, "universe.json"), {}) or {}) \
         if SPOT_BOOK_RETIRED else {}
     spot_equity = build_equity(events, spot_trips) if SPOT_BOOK_RETIRED else {}
+    # 10-24: header/version were STILL frozen at container-start values — the
+    # ENGINE dict evaluates _engine_version()/_engine_header() at IMPORT time and
+    # nothing re-called them per build (the 10-22 TTL fix made the reader lazy but
+    # left this call site import-bound; build() only refreshed spot_book stats).
+    # Observed: header v4.9.3-perp beside perp.engine v4.9.6-perp. Refresh here;
+    # the 30s TTL cache keeps the re-parse cheap.
+    ENGINE["version"] = _engine_version()
+    ENGINE["header"] = _engine_header()
+    ENGINE["spot_book"]["version"] = _versions()["spot"]
     ENGINE["spot_book"]["trades_closed"] = spot_stats.get("trades_all")
     ENGINE["spot_book"]["net_eur"] = spot_stats.get("net_all_eur")
     ENGINE["spot_book"]["net_pct"] = spot_stats.get("net_all_pct")
