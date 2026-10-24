@@ -31,7 +31,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances()
 
-ENGINE_VERSION = "v4.9.4-perp"
+# v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
+# cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
+# unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
+ENGINE_VERSION = "v4.9.6-perp"  # v4.9.5 (10-24): prompt reframe only —
+# recent-trades clause softened to informational + active-EV instruction added
+# (A/B on captured state: p(no_trade) 0.53-0.55 -> 0.28-0.36, same state).
+# Thresholds UNTOUCHED; calibration count restarts at v4.9.5 per the v4.8 rule.
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -93,8 +99,9 @@ MAX_NOTIONAL_FRAC = 0.98       # of USDC equity — deploy (nearly) all of it
 # before that review.
 MAX_NOTIONAL_USD = 25.0        # burn-in cap (see above); also a bug guard
                                # against a garbage usdc_equity() read
-MAX_OPEN = 1
-MAX_ENTRIES_PER_CYCLE = 1
+MAX_OPEN = 4             # v4.9.6: 4 slots x $25 cap = up to $100 of ~$130 equity;
+                         # headroom kept so the last entry can't bounce on avail margin
+MAX_ENTRIES_PER_CYCLE = 2  # v4.9.6: cycle() loop below now real (break->continue on fill)
 LIQ_BUFFER_PCT = 15.0          # force-close if price comes within 15% of liqPx
 
 # ---------------- gates / timing ----------------
@@ -755,9 +762,7 @@ def decide():
                     "low-quality setup regardless of the pair's own numbers; measured on our "
                     "own ledger, BTC-aligned entries earned +0.07%/trade vs -0.17%/trade "
                     "against BTC. our_recent_trades: OUR OWN last exits (instrument, side, "
-                    "result, minutes ago) — if the same inst+side was stopped out recently, "
-                    "re-entering it is repeating a setup that already failed; require a "
-                    "materially changed picture, else no_trade. news_catalysts and "
+                    "result, minutes ago), for information only. news_catalysts and "
                     "macro_events_24h / macro_released_3h_surprises: headlines and high-"
                     "impact macro prints (a surprise print in the last hours is the current "
                     "tape driver; a big event within 1-2h means headline risk over a 45-min "
@@ -767,7 +772,10 @@ def decide():
                     "mid), real buying. SHORT setups: blow-off into 30m high with chg_7d flat/"
                     "negative, or crowded funding + stalling momentum. Symmetric rule: the "
                     "move must plausibly reach tp_pct within 30-90min given volatility_30min. "
-                    "When unsure pick no_trade: a missed scalp costs 0, a chop costs ~0.3-0.6%."),
+                    "When unsure pick no_trade: a missed scalp costs 0, a chop costs ~0.3-0.6%. "
+                    "Your job is to find the highest expected-value direction on the best pair. "
+                    "Pick no_trade ONLY if both long and short are negative-EV net of the "
+                    "~0.07-0.11% round-trip cost."),
         "collateral_usdc": round(eq, 2),
         "notional_budget_usd": round(budget, 2),
         "open_positions": [{"inst": i, "side": m["side"], "entry_ref": m["entry_ref"]}
@@ -988,7 +996,7 @@ if __name__ == "__main__":
                     lines.append(("DRY-" if DRY else "") +
                                  f"OPENED {d['inst']} {d['side'].upper()} x{d.get('contracts')} "
                                  f"@{d.get('fill_px')} ${d.get('notional_usd')} conf={d.get('conf',0):.2f}")
-                    break
+                    continue
                 lines.append(f"no trade: {d.get('why') or d.get('choice')}")
                 break
         else:
