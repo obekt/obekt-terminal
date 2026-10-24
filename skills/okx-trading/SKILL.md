@@ -370,6 +370,48 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   raw API row (vol24h=contracts, volCcy24h=base ccy, book sz=contracts, ctVal
   per instrument). Known gap noted: the entry-time depth re-check constant
   exists but is unwired on the perp side; scan depth can be 10 min stale.
+- **v4.9.5-perp (10-24)**: PROMPT REFRAME — operator: "why is jev always
+  saying no? can it be the way you ask jev?" Partly, yes. METHOD (reusable):
+  monkeypatch the decision-API call inside the engine to capture the exact
+  live (state, questions) and raise an abort exception — decide() can never
+  reach order placement — then replay the same captured state offline through
+  context variants × N reps and compare p(no_trade). PITFALL: the engine
+  module and the harness's library import are the SAME module object; save
+  the real function before patching and restore it in a finally, or every
+  replay arm hits the fake. FINDINGS on a quiet-tape state: control
+  p(no_trade) 0.53-0.55; neutralizing the "recent trades … else no_trade"
+  suppression clause −0.05; adding an active-EV framing ("find the highest-
+  expected-value direction; no_trade ONLY if both sides are negative-EV net
+  of costs") −0.20 (0.28-0.36); correcting the chop-cost line did nothing
+  (the number was accurate — verify a prompt line against the real bracket
+  before "fixing" it). Even the most aggressive arm picked 0/3 on a genuinely
+  quiet tape: TAPE dominates, framing modulates. Historical corroboration:
+  the no_trade rate was 14% before the v4.7 enrichment and 89% two days
+  after — the suppressor stack (regime warnings + own-stop memory + headline
+  risk + "when unsure pick no_trade") bought that collapse. DEPLOY: exact-
+  string pre-validation on the captured state, then an AST check that the
+  patched source's folded context literal is byte-identical to the tested
+  string (adjacent string literals fold to one ast.Constant — verification
+  without running decide()), then one supervised cycle. First supervised
+  cycle traded after 11h idle: margin 0.35 vs a 0.15 bar, all gates cleared
+  with room. Thresholds untouched; calibration window restarts (prompt
+  change = new decision-metric distribution).
+- **v4.9.6-perp (10-24)**: MULTI-SLOT — operator: "can we have multiple open
+  positions at once?" Two things blocked it: MAX_OPEN=1, and a dead loop —
+  cycle()'s `for _ in range(MAX_ENTRIES_PER_CYCLE)` broke after the first
+  iteration in BOTH branches (fill and no-trade), so the constant never
+  mattered. Fixes: MAX_OPEN 1→4 (4 × per-trade cap keeps equity headroom —
+  the local budget check reads TOTAL equity, not available margin, so too
+  many slots would pass locally and bounce exchange-side); break→continue ON
+  FILL only (a no-trade still breaks: same state, same answer);
+  MAX_ENTRIES_PER_CYCLE=2; service timeout raised (two decide passes + maker
+  waits can exceed the old budget). Position metadata, per-instrument
+  cooldowns and the manage loop were already multi-position (inherited from
+  the multi-slot spot design) — only the entry path was single-slot.
+  Verified end to end in ONE supervised cycle: trail-closed a winner, opened
+  a first-ever instrument (visible only since the v4.9.4 unit fix made
+  expensive coins pass the turnover floor), then the second decide() in the
+  same cycle ran and honestly gated itself below the margin bar.
 - **Version freshness needs LAZY reads, not just source-parsing (10-22)**: the
   deck parsed ENGINE_VERSION from engine source (single-source rule) but stored
   it in a MODULE-LEVEL constant; the server keeps the module imported across
@@ -382,7 +424,16 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   wrong, check the semantic frame too — the "0 trades today" that prompted the
   audit was CORRECT (the day counter is UTC, the operator's midnight had
   passed; the hero cell now says "· UTC day"), and it led to the panel that
-  was actually lying.
+  was actually lying. FOLLOW-UP (10-24): the TTL fix was INCOMPLETE and the
+  bug recurred — the readers went lazy, but the module-level ENGINE dict
+  still evaluated them at import, so the header froze again at the
+  container-start version (v4.9.3 beside a live v4.9.6 panel) while passing
+  every "the fix is deployed" check. A lazy reader is necessary but not
+  sufficient: every CALL SITE that snapshots it into a module-level constant
+  must move inside the per-build path. And verify freshness on the RENDERED
+  artifact (curl the published data.js, compare the header field against the
+  engine's own status snapshot), not in the code — two fields disagreeing in
+  one payload is the tell.
 - **Observability lesson (10-15)**: the deck hardcoded gate thresholds
   (margin≥0.25, cooldowns 15/30) and drifted from the engine twice. UI must PARSE
   thresholds from engine source, never hardcode. Also: account-level P&L must be
