@@ -439,6 +439,73 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   thresholds from engine source, never hardcode. Also: account-level P&L must be
   % of LAUNCH capital, not sum-of-per-trade-%-of-stake (stakes varied 18→120 EUR;
   the naive sum showed -32% vs the true -14.2%).
+- **v5.0-mom (10-25) — LLM SIGNAL RETIRED, DETERMINISTIC MOMENTUM LIVE**: the
+  kill-gate on the Jev perp signal fired exactly as pre-committed (n≥30 closes
+  since v4.9 OR the review date): 79 closes, 39% WR, net −1.47 USDC, gross ≈ 0.
+  The best window — after the v4.9.5 prompt reframe — grossed +0.03%/trade
+  against a 0.086% round-trip cost: the signal covered a third of its own fees
+  and sat within ~1 SE of zero. Verdict: NO EDGE → close the book and park the
+  collateral in flexible savings, executed under the standing pre-authorization
+  (flat verified on-exchange; the final trade closed on its server-side
+  take-profit). The operator then overruled the shutdown ("i gave you about 130
+  dollars to experiment live — that's the idea of the public website"), so the
+  book relaunched the same day on a NEW DETERMINISTIC ALGORITHM, not the old
+  signal. v5.0-mom (`okx_mom.py`): rank the ≤30 most liquid XPERPs (turnover
+  floor; vol_usd = volCcy24h × last — the unit fix carried over) by 14-day
+  return via 4H candles, long the strongest 2 / short the weakest 2, capped
+  notional per leg at 1× isolated, 24h-ANCHORED full rebalance (no mid-period
+  refills after stops = the backtest's semantics), 1.5% protective stop
+  (server OCO + poll backup), zero LLM calls per cycle. Selected from a 100-day
+  1H OHLC backtest (25 instruments, taker costs per leg, intrabar stops with
+  gap-through conservatism, out-of-sample time split): +0.857%/d net, halves
+  +0.440/+1.285 — positive in BOTH — and robust at every stop level 1–3%
+  (stops IMPROVED the raw +0.779 signal). Honest biases declared at deploy:
+  the universe was selected by CURRENT turnover (selection bias inflates the
+  second half — the live expectation is the first half's +0.44%/d), funding
+  was excluded from the simulation (a carry tailwind for the short leg on
+  premium-funding names), and 100 days is one regime. New kill-gate: 30
+  rebalances OR 14 days, live ≤ 0 → close again under the same
+  pre-authorization. The first live book proved the stop path within 9 minutes
+  (the top-ranked +188%/14d instrument stopped at −1.63%, server-side).
+- **NEVER str() A PRICE FLOAT (10-25)**: two launch legs died with 51000
+  "Parameter px error" — `str(5.9e-06)` renders `'5.9e-06'` and the venue
+  rejects scientific notation. Every px-string site in the shared entry path
+  (maker body/TP/SL + IOC body/TP/SL — six in total) now goes through a
+  plain-decimal formatter (12dp, trailing zeros stripped), unit-tested on
+  sub-1e-4 values. Related: a 99% take-profit stub produced absurd trigger
+  prices on cheap coins; a far-but-sane stub (25%) keeps the OCO shape valid.
+- **A QUIET BOOK STILL NEEDS A HEARTBEAT (10-25)**: the momentum engine logs
+  only on scan/rebalance/exit, so a clean 24h hold emits ZERO events — and a
+  public deck's liveness strip reads the last log event's timestamp, so a
+  perfectly healthy engine reads as paused within an hour. One throttled
+  heartbeat event (30-min) keeps the tape honest without log bloat. General
+  form: after swapping engines, re-derive every freshness/health indicator
+  from the NEW engine's actual event cadence, never the predecessor's.
+- **PAPER MODE (v4.9.7, 10-25)**: `--dry-run` became true shadow bookkeeping —
+  positions persist in meta (the manage loop runs the full bracket/trail/
+  time-stop lifecycle against live prices), a fixed paper bankroll replaces the
+  real balance read (which is zero when collateral is parked), virtual fees are
+  conservative, and every event is flagged `dry:true`. Built for the kill-gate
+  transition; the operator preferred small live capital over paper validation,
+  but it remains the zero-capital lane for validating future candidates.
+  Lesson either way: a dry-run that logs intent WITHOUT persisting state never
+  exercises the exit side — the half where the bugs live.
+- **RETIRING A SIGNAL ENGINE MEANS RE-LABELING EVERY PUBLIC SURFACE (10-25)**:
+  the swap required suppressing the retired engine's frozen decision event so
+  it could not present itself as the "latest decision" (it was rendering in
+  the gates panel through a fallback path), a strategy-conditional desk-note
+  prompt (hardcoded lines asserting "the Jev model returns typed decisions"
+  and "never in paper mode" both became false), a `strategy` field threaded
+  through the payload into trading_state, and momentum-native rows in the
+  gates panel (rank window, current legs, rebalance countdown, stop policy).
+  Checklist for any engine swap: header version source, decision-panel feeds,
+  desk-note prompt claims, staleness/liveness feeds, per-trade replay
+  assumptions. Deploy-time discipline that saved this one: patch scripts must
+  compile-gate a TEMP COPY before writing production (a write-then-compile
+  ordering briefly put a syntactically broken generator on disk), and an
+  inserted definition whose else-branch contains a later anchor's literal
+  makes that anchor non-unique — order the replacements so the swap precedes
+  the definition.
 
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 
