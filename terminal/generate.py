@@ -1456,6 +1456,19 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     # True when the spot book has been decommissioned: the payload then reports the
     # perp book as "today" and labels every spot number as frozen history.
     _spot_retired = SPOT_BOOK_RETIRED
+    _is_mom = (perp or {}).get("strategy") == "momentum"
+    _engine_desc = (
+        "The engine: a DETERMINISTIC cross-sectional momentum strategy (v5.0-mom) — the most liquid "
+        "XPERPs are ranked by 14-day return, long the strongest 2 / short the weakest 2, 24h hold then "
+        "full rebalance, 1.5% protective stop (server OCO + poll backup). No LLM participates in trade "
+        "decisions; exits are the stop or the rebalance. It replaced the Jev LLM signal on 2026-10-25 "
+        "after that signal's pre-committed kill-gate review found no edge.\n\n"
+    ) if _is_mom else (
+        "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
+        "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text, "
+        "scored in BOTH directions per contract); "
+        "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
+    )
     perp_open = [{
         "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),
         "entry": p.get("entry_ref"), "notional_usd": p.get("notional_usd"),
@@ -1472,6 +1485,7 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "perp_open_positions": len(perp_positions),
             "open_positions": len(positions or []) + len(perp_positions),
             "perp_halted": perp.get("halted"),
+            "strategy": perp.get("strategy"),
             # day_trades = the LIVE book's count once spot is retired (spot's is frozen)
             "day_trades": (perp_stats.get("day_trades") if _spot_retired
                            else equity.get("day_trades")),
@@ -1591,10 +1605,7 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         "open_positions is now effectively perp_open_positions; the perp_book block "
         "lists each open X-Perp position with its side (long/short). "
         "Few or zero trades in a day is normal gate selectivity, not a mode change. "
-        "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
-        "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text, "
-        "scored in BOTH directions per contract); "
-        "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
+        + _engine_desc +
         "LIVE SYSTEM SNAPSHOT (UTC):\n" + payload_txt + "\n\n"
         "Write for sophisticated visitors who might hire the sysop to build one. Rules: "
         "reference ONLY facts in the snapshot, no invented numbers, no invented modes or states "
@@ -1707,6 +1718,12 @@ def build_perp(shared_trips=None):
                           "last": lv.get("last"), "upc": lv.get("upc"),
                           "liq_px": lv.get("liq_px"), "upl": lv.get("upl"),
                           "lever": lv.get("lever")})
+    last_mom = None
+    for e in reversed(events):
+        if e.get("event") == "mom_scan":
+            last_mom = {"ts": e.get("ts"), "longs": e.get("longs"), "shorts": e.get("shorts"),
+                        "n_universe": e.get("n_universe"), "n_ranked": e.get("n_ranked")}
+            break
     last_jev = None
     for e in reversed(events):
         if e.get("event") == "perp_jev":
@@ -1745,10 +1762,20 @@ def build_perp(shared_trips=None):
                 "engine_source": "okx_perp.py",
             }
             break
+    # v5.0-mom: a Jev call OLDER than the latest momentum scan is frozen history,
+    # not the live decision (freshness rule: never present a dead engine's last
+    # call as current intent).
+    _strategy = "jev"
+    if last_mom and (not last_jev or (last_mom.get("ts") or "") > (last_jev.get("ts") or "")):
+        _strategy = "momentum"
+        last_jev = None
     return {
         # version read from the perp engine source (never hardcoded — it drifted
         # to a stale "v4.0-perp" string the first time this block was written)
         "engine": _perp_engine_version(),
+        "strategy": _strategy,
+        "last_mom": last_mom,
+        "mom_anchor": (_load_json(os.path.join(BASE, "mom_state.json"), {}) or {}).get("last_rebalance_ts"),
         "venue": "OKX EUROPE X-PERPS (MiFID)",
         "halted": os.path.exists(os.path.join(BASE, "STOP")) or os.path.exists(os.path.join(BASE, "STOP_PERP")),
         "breaked": prank.get("breaked"), "day": prank.get("day"),
@@ -1841,6 +1868,11 @@ def build():
     # (live_events are already the normalized perp stream when spot is retired).
     # Passing the shared list means one open/close pairing for the whole deck.
     perp = build_perp(shared_trips=(trips if live_ccy == "USD" else None))
+    if isinstance(perp, dict) and perp.get("strategy") == "momentum":
+        # v5.0-mom: a frozen Jev call must not present itself as the LIVE
+        # decision (freshness rule). Momentum decisions surface via
+        # perp.last_mom + the momentum rows in DECISION GATES.
+        jev_latest = None
 
     news = catalyst.get("catalysts", [])
     # MACRO: only the retired spot engine injected econ-calendar events into the
