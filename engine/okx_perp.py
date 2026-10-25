@@ -34,7 +34,7 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v4.9.6-perp"  # v4.9.5 (10-24): prompt reframe only —
+ENGINE_VERSION = "v5.0-mom"  # v4.9.5 (10-24): prompt reframe only —
 # recent-trades clause softened to informational + active-EV instruction added
 # (A/B on captured state: p(no_trade) 0.53-0.55 -> 0.28-0.36, same state).
 # Thresholds UNTOUCHED; calibration count restarts at v4.9.5 per the v4.8 rule.
@@ -143,6 +143,8 @@ STALE_EXIT_MIN = 60
 COOLDOWN_MIN = 20
 WIN_COOLDOWN_MIN = 10
 DAILY_LOSS_PCT = 8.0           # USDC-equity breaker -> STOP_PERP (auto-clears UTC roll)
+PAPER_EQUITY_USD = 129.47      # v4.9.7: dry-run paper bankroll (kill-gate closed the
+                               # live book 10-25; real USDC sits in Simple Earn flexible)
 
 _INSTR = {}
 
@@ -193,6 +195,8 @@ def bracket_for(spread_pct):
             "trail_floor_pct": round(tp * FLOOR_TP_RATIO, 3)}
 
 def usdc_equity():
+    if DRY:
+        return PAPER_EQUITY_USD   # paper book: trading acct holds 0 (funds in savings)
     b = J.balances().get("USDC") or {}
     return float(b.get("cash", 0)) + float(b.get("frozen", 0)) or float(b.get("avail", 0))
 
@@ -480,6 +484,13 @@ def perp_position(inst):
             return p
     return None
 
+def fpx(v):
+    """Plain-decimal price string. str(float) gives '5.9e-06' for sub-1e-4
+    prices and OKX rejects scientific notation with 51000 Parameter px error
+    (PEPE/PUMP entries, 10-25 v5.0 launch). 12dp covers every XPERP tickSz."""
+    s = f"{float(v):.12f}".rstrip("0").rstrip(".")
+    return s or "0"
+
 def open_perp(inst, side, contracts, px, bk, dry=False):
     """post_only entry (maker 0.02%) + attached OCO bracket. Unfilled after
     FILL_WAIT_S = cancel, no trade (v3.8 lesson: never chase as taker)."""
@@ -489,12 +500,12 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
     entry_side = "buy" if side == "long" else "sell"
     tp_mult = 1 if side == "long" else -1
     algo = {"ordType": "oco", "sz": sz,
-            "tpTriggerPx": str(rstep(px * (1 + tp_mult * bk["tp_pct"] / 100), tick, down=(side == "short"))),
+            "tpTriggerPx": fpx(rstep(px * (1 + tp_mult * bk["tp_pct"] / 100), tick, down=(side == "short"))),
             "tpOrdPx": "-1",
-            "slTriggerPx": str(rstep(px * (1 - tp_mult * bk["sl_pct"] / 100), tick, down=(side == "long"))),
+            "slTriggerPx": fpx(rstep(px * (1 - tp_mult * bk["sl_pct"] / 100), tick, down=(side == "long"))),
             "slOrdPx": "-1"}
     body = {"instId": inst, "tdMode": "isolated", "side": entry_side, "ordType": "post_only",
-            "sz": sz, "px": str(rstep(px, tick, down=(side == "long"))),
+            "sz": sz, "px": fpx(rstep(px, tick, down=(side == "long"))),
             "attachAlgoOrds": [algo]}
     if dry:
         logrec({"event": "perp_dry_open", "inst": inst, "side": side, "sz": sz,
@@ -531,11 +542,11 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
                     raise ValueError("IOC ref px missing from ticker")
                 tick_r = float(ins["tickSz"])
                 algo2 = {k: v for k, v in algo.items()}
-                algo2["tpTriggerPx"] = str(rstep(ref * (1 + tp_mult * bk["tp_pct"] / 100), tick_r, down=(side == "short")))
-                algo2["slTriggerPx"] = str(rstep(ref * (1 - tp_mult * bk["sl_pct"] / 100), tick_r, down=(side == "long")))
+                algo2["tpTriggerPx"] = fpx(rstep(ref * (1 + tp_mult * bk["tp_pct"] / 100), tick_r, down=(side == "short")))
+                algo2["slTriggerPx"] = fpx(rstep(ref * (1 - tp_mult * bk["sl_pct"] / 100), tick_r, down=(side == "long")))
                 body2 = {k: v for k, v in body.items()}
                 body2["ordType"] = "ioc"
-                body2["px"] = str(rstep(ref, tick_r, down=(entry_side == "buy")))
+                body2["px"] = fpx(rstep(ref, tick_r, down=(entry_side == "buy")))
                 body2["attachAlgoOrds"] = [algo2]
                 d2 = J.api("POST", "/api/v5/trade/order", body2)
                 o2 = d2[0] if d2 else {}
@@ -681,7 +692,10 @@ def manage():
                     upc = sgn * (exit_px - entry) / entry * 100
             logrec({"event": "perp_close", "inst": inst, "side": side, "reason": why,
                     "upc": round(upc, 2), "age_min": round(age_min, 1),
-                    "fill_px": exit_px, "realized_fee": exit_fee,
+                    "fill_px": (exit_px if not DRY else px),
+                    "realized_fee": (exit_fee if not DRY else str(-round(
+                        float(m.get("notional_usd") or 0) * 0.0005, 6))),
+                    "dry": DRY,
                     "notional_usd": m.get("notional_usd"),
                     "ordId": (cod or {}).get("ordId")})
             actions.append({"closed": inst, "side": side, "reason": why, "upc": round(upc, 2)})
@@ -885,8 +899,24 @@ def decide():
         logrec({"event": "perp_open_err", "inst": inst, "err": str(err)[:150]})
         return rec
     if DRY:
+        # v4.9.7 PAPER BOOK: persist the shadow position so manage() runs the full
+        # bracket/trail/time-stop lifecycle against live prices. Fee = taker 0.05%
+        # (conservative: paper fills are immediate at the signal px).
+        pfee = str(-round(notional * 0.0005, 6))
+        meta = load_meta()
+        meta[inst] = {"opened_ts": now_iso(), "side": side, "contracts": float(contracts),
+                      "entry_ref": px, "notional_usd": round(notional, 2),
+                      "jev_conf": conf, "jev_margin": margin, "jev_noul": noul,
+                      "bracket": bk, "hwm_pct": 0.0, "algo_ok": False, "dry": True,
+                      "entry_fee": pfee, "entry_ordId": None}
+        save_meta(meta)
+        logrec({"event": "perp_open", "inst": inst, "side": side, "contracts": contracts,
+                "notional_usd": round(notional, 2), "fill_px": px, "conf": conf,
+                "margin": margin, "noul": noul, "algo_ok": False,
+                "realized_fee": pfee, "entry_type": "paper", "bracket": bk,
+                "dry": True})
         rec.update({"acted": True, "inst": inst, "side": side, "contracts": contracts,
-                    "notional_usd": round(notional, 2)})
+                    "notional_usd": round(notional, 2), "dry": True})
         return rec
     fill_px = float(od.get("avgPx") or 0) or px
     fee = od.get("fee")

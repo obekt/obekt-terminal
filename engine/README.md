@@ -1,9 +1,15 @@
 # `engine/` — the autonomous traders
 
-**Two engines, one live book.** As of 2026-10-15 all capital sits in the
-two-way X-Perp book; the spot EUR engine is retired (timer disabled, source and
-ledger kept — the live engine imports its plumbing as a library). Each is a
-one-shot process called by a scheduler (cron/systemd timer) every 5 minutes — no
+**One live book, three engine files.** As of 2026-10-25 the live X-Perp book is
+driven by `okx_mom.py` — a deterministic cross-sectional momentum strategy that
+replaced `okx_perp.py`'s LLM-signal decision path after that signal's
+pre-committed kill-gate review found no edge (79 closes, net −1.5 USDC — the
+full honest record is on the dashboard). The spot EUR engine was retired
+2026-10-15 (timer disabled, source and ledger kept). The plumbing is shared:
+`okx_mom.py` imports `okx_perp.py` (execution: entries with attached OCO,
+realized-fee-capturing closes, state/log files, risk breaker), which imports
+`okx_jev.py` (signed API client, market data). Each engine is a one-shot
+process called by a scheduler (cron/systemd timer) every 5 minutes — no
 daemon needed. They are isolated by design: separate collateral, state files,
 kill-switches and daily breakers.
 
@@ -14,7 +20,8 @@ kill-switches and daily breakers.
 
 | file | what it is |
 |---|---|
-| `okx_perp.py` | **LIVE book — X-PERPS (two-way: LONG + SHORT, USD-settled MiFID expiry-perps).** Imports `okx_jev` for the signed API client, market data and the Jev client — it does not duplicate them. Own state (`perp_*.json`), USDC collateral, 1× isolated margin, liquidation-distance guard. Two-sided Jev: scores `p(long)` and `p(short)` per contract. ~770 lines. |
+| `okx_mom.py` | **LIVE book — XS MOMENTUM (v5.0-mom, two-way, USD-settled X-Perps).** Deterministic, no LLM in the loop: rank the ≤30 most liquid XPERPs by 14-day return, long the strongest 2 / short the weakest 2 ($25/leg, 1× isolated), full rebalance every 24h, 1.5% protective stop (server OCO + poll backup). Selected from a 100-day OHLC backtest with intrabar stops and an out-of-sample split (+0.86%/d net, both halves positive). ~340 lines, imports `okx_perp`. |
+| `okx_perp.py` | **Execution host + retired Jev-signal book (X-PERPS two-way).** Its Jev LLM decision path is retired as the live signal-maker (kill-gate 2026-10-25: 111 closes, −4.47 USDC, no edge); the file stays load-bearing twice over: `okx_mom.py` imports its execution machinery (open/close with attached OCO + realized fees, meta/log/state files, breaker), and its `--dry-run` paper mode carries true shadow bookkeeping (persisted positions, virtual fills/fees, fixed paper bankroll) for validating future candidates without capital. ~1000 lines. |
 | `okx_jev.py` | **RETIRED book — SPOT (long-only, EUR pairs).** Kept for two reasons: it is the honest 132-trade record of the first strategy, and `okx_perp.py` imports it as a library (signed API, market data, Jev client, `balances()`). The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1600 lines, stdlib only (no pip deps). |
 | `news_feed.py` | Keyless RSS catalyst feed (Cointelegraph/CNBC/Yahoo Finance) → `catalyst.json`, 30-min freshness guard. Called by spot `cycle`. |
 | `social_feed.py` | Keyless sentiment: alternative.me Fear&Greed (+ streak), CoinGecko trending + per-coin community polls, vs-EUR market context → `social.json`, 15-min cache. Called by spot `cycle`. |
