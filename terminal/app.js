@@ -358,15 +358,15 @@
       const anchor = (D.perp || {}).mom_anchor;
       let nextRb = "\u2014";
       if (anchor) {
-        const due = new Date(anchor).getTime() + 24 * 3600 * 1000;
+        const due = new Date(anchor).getTime() + 6 * 3600 * 1000;
         const hrs = (due - Date.now()) / 3600000;
         nextRb = hrs <= 0 ? "DUE \u2014 next cycle" : "in " + hrs.toFixed(1) + "h (" + new Date(due).toISOString().slice(11, 16) + " UTC)";
       }
-      out.push(gateRow("XS MOMENTUM v5.0-mom \u2014 RANK 14d RETURN", true,
+      out.push(gateRow("XS MOMENTUM \u2014 RANK 14d RETURN", true,
         "universe " + (lm.n_universe || "?") + " most-liquid XPERPs \u00b7 ranked " + (lm.n_ranked || "?"), false));
       out.push(gateRow("LONG STRONGEST \u00d72", true, fmtLegs(lm.longs), false));
       out.push(gateRow("SHORT WEAKEST \u00d72", true, fmtLegs(lm.shorts), false));
-      out.push(gateRow("HOLD 24h \u2192 FULL REBALANCE", true, "next " + nextRb, false));
+      out.push(gateRow("HOLD 6h \u2192 FULL REBALANCE", true, "next " + nextRb, false));
       out.push(gateRow("PROTECTIVE STOP 1.5%", true, "server OCO + 5-min poll backup \u00b7 no TP \u2014 winners run to rebalance", false));
     } else if (j && j.criteria) {
       const c = j.criteria;

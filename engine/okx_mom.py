@@ -3,7 +3,7 @@
 OKX EEA X-Perp book. Replaces the Jev LLM signal (kill-gated 10-25: 79 closes,
 net -1.47 USDC, gross +0.03%/trade vs 0.086% cost) with the backtested XS
 momentum signal: 14d lookback rank across the 30 most liquid XPERPs, long
-top-2 / short bottom-2, 24h hold, 1.5% protective stop.
+top-2 / short bottom-2, 6h hold, 1.5% protective stop.
 
 Backtest evidence (10-25, 25 coins x 100d hourly OHLC, taker 0.05%/leg,
 intrabar stops w/ gap-through conservatism, OOS time split):
@@ -20,8 +20,10 @@ meta -> perp_positions.json, status snapshot -> perp_status.json) so the public
 deck keeps working unchanged. NO Jev/LLM calls: fully deterministic, ~0 cost.
 
 Modes: cycle (manage+rebalance+status), status, ranks (debug scan).
-Kill-gate v5: at 30 rebalance cycles OR 14 days, compare live net %/day vs the
-backtest OOS-first-half; if live <= 0, close the book (pre-authorized pattern).
+Kill-gate v5.2: at 30 rebalance cycles (~7.5d at H6) OR 10 days, compare live net
+%/day vs the backtest recent-window expectation (H6 row: +1.0%/d last-50d, +2.1%/d
+last-30d, full-window +0.60; OOS1 regime was -0.34 — hold-window sensitive).
+If live <= 0 at the gate, close/replace the book (pre-authorized pattern).
 """
 import json, os, sys, time, datetime
 
@@ -30,12 +32,12 @@ sys.path.insert(0, HERE)
 import okx_jev as J          # api/ticker/instruments helpers (EEA key auth)
 import okx_perp as P         # execution machinery + files + constants
 
-ENGINE_VERSION = "v5.1-mom"
+ENGINE_VERSION = "v5.2-mom"
 DRY = P.DRY                   # --dry-run passthrough (smoke tests only)
 
 # ---- strategy parameters (from the 10-25 stop-aware backtest) -------------
 MOM_LOOKBACK_H   = 336        # 14d rank lookback (L336 in hourly bars)
-MOM_HOLD_MIN     = 1440       # 24h hold, then full rebalance (H24)
+MOM_HOLD_MIN     = 360        # 6h hold, then full rebalance (H6) — v5.2 grid 10-26
 MOM_K            = 2          # long top-2 / short bottom-2 (K2) = 4 slots
 MOM_SL_PCT       = 1.5        # protective server-side stop (best OOS row)
 MOM_TP_PCT       = 25.0       # far TP stub (25%): winners run to the 24h rebalance; 99% broke
@@ -233,7 +235,7 @@ def _save_mom_state(s):
         os.replace(tmp, MOM_STATE_FILE)
 
 def rebalance_due(meta):
-    """24h-anchored rebalance (matches backtest semantics): due when the anchor
+    """6h-anchored rebalance (matches backtest semantics): due when the anchor
     is >= MOM_HOLD_MIN old — NOT merely when slots are free. If all legs stop
     out mid-hold the book stays FLAT until the next anchor (the backtest never
     re-enters mid-period)."""

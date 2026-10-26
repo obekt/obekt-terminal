@@ -34,7 +34,7 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v5.1-mom"  # v4.9.5 (10-24): prompt reframe only —
+ENGINE_VERSION = "v5.2-mom"  # v4.9.5 (10-24): prompt reframe only —
 # recent-trades clause softened to informational + active-EV instruction added
 # (A/B on captured state: p(no_trade) 0.53-0.55 -> 0.28-0.36, same state).
 # Thresholds UNTOUCHED; calibration count restarts at v4.9.5 per the v4.8 rule.

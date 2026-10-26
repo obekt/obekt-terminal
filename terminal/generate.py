@@ -1458,8 +1458,8 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     _spot_retired = SPOT_BOOK_RETIRED
     _is_mom = (perp or {}).get("strategy") == "momentum"
     _engine_desc = (
-        "The engine: a DETERMINISTIC cross-sectional momentum strategy (v5.0-mom) — the most liquid "
-        "XPERPs are ranked by 14-day return, long the strongest 2 / short the weakest 2, 24h hold then "
+        "The engine: a DETERMINISTIC cross-sectional momentum strategy (v5 momentum engine) — the most liquid "
+        "XPERPs are ranked by 14-day return, long the strongest 2 / short the weakest 2, 6h hold then "
         "full rebalance, 1.5% protective stop (server OCO + poll backup). No LLM participates in trade "
         "decisions; exits are the stop or the rebalance. It replaced the Jev LLM signal on 2026-10-25 "
         "after that signal's pre-committed kill-gate review found no edge.\n\n"
