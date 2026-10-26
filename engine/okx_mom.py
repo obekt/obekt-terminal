@@ -30,7 +30,7 @@ sys.path.insert(0, HERE)
 import okx_jev as J          # api/ticker/instruments helpers (EEA key auth)
 import okx_perp as P         # execution machinery + files + constants
 
-ENGINE_VERSION = "v5.0-mom"
+ENGINE_VERSION = "v5.1-mom"
 DRY = P.DRY                   # --dry-run passthrough (smoke tests only)
 
 # ---- strategy parameters (from the 10-25 stop-aware backtest) -------------
