@@ -506,6 +506,28 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   inserted definition whose else-branch contains a later anchor's literal
   makes that anchor non-unique — order the replacements so the swap precedes
   the definition.
+- **v5.2-mom (10-26) — HOLD 24h → 6h AFTER A THROUGHPUT DIRECTIVE**: the
+  operator asked for multiple deals a day to iterate faster on strategy
+  selection. Re-ran the stop-aware OHLC grid on REFRESHED data (25 coins,
+  100d, one-day-shifted window and re-picked universe): NO config survived
+  the both-OOS-halves rule (every OOS1 was negative — the signal is regime
+  sensitive), and the live H24 row chosen a day earlier was now among the
+  WORST (−0.39%/d full window, −0.66%/d last-30d). The verdict did not hold
+  across a one-day window shift — a single grid winner is fragile to its
+  fitting window. H6/L336/K2/stop1.5 dominated the status quo on every axis
+  measured: +0.60%/d full window, +2.1%/d last-30d, +1.0%/d last-50d,
+  16 legs/day (4× throughput, faster kill-gate accrual). Deployed as
+  v5.2-mom: one constant changed (hold 1440→360 min); every consumer
+  re-pointed in the same change — site version strings (both engine files),
+  desk-note engine description, the gates-panel rebalance countdown (24h
+  was a hardcoded JS literal) and its HOLD label, frozen demo refreshed
+  through the gated fetch→scan→schema→swap script. Kill-gate re-anchored:
+  30 rebalances (~7.5d at H6) OR 10 days, live ≤ 0 → close/replace under
+  the same pre-authorization. LESSONS: when the grid's verdict flips with a
+  one-day window shift, prefer the config that dominates across MULTIPLE
+  windows (full, OOS halves, recent-30/50d) over the single best row; and
+  throughput is itself a legitimate objective when the operator wants
+  learning speed — more legs/day reaches the pre-committed gate sooner.
 
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 
