@@ -122,11 +122,17 @@ def _open_one(inst, side, ranks_row):
         eq = P.usdc_equity()
         budget = min(eq * P.MAX_NOTIONAL_FRAC * float(P.PERP_LEV), P.MAX_NOTIONAL_USD)
         notional_per_ct = ctval * px
-        contracts = int(budget // notional_per_ct)
-        contracts = max(contracts, int(float(ins.get("minSz") or 1)))
+        # szfix 10-29: int() truncation dropped legs on expensive instruments
+        # (SKHYNIX ~$1149/ct, lotSz 0.001 -> int(30//1149)=0 -> OKX 51000 sz
+        # error). Size in lot steps, decimal-safe, honoring fractional minSz.
+        lot = float(ins.get("lotSz") or 1)
+        minsz = float(ins.get("minSz") or lot)
+        contracts = P.rstep(budget / notional_per_ct, lot, down=True)
+        if contracts < minsz:
+            contracts = minsz
         notional = contracts * notional_per_ct
-        if notional > budget * 1.15 or notional > P.MAX_NOTIONAL_USD * 1.15:
-            log({"event": "mom_skip", "inst": inst, "why": f"min contract {notional:.1f} > budget {budget:.1f}"})
+        if contracts <= 0 or notional > budget * 1.15 or notional > P.MAX_NOTIONAL_USD * 1.15:
+            log({"event": "mom_skip", "inst": inst, "why": f"min size notional {notional:.1f} > budget {budget:.1f}"})
             return False
         bk = {"cost_pct": round(MOM_SL_PCT / 15, 3), "tp_pct": MOM_TP_PCT, "sl_pct": MOM_SL_PCT,
               "trail_arm_pct": 999.0, "trail_giveback_pct": 999.0, "trail_floor_pct": 999.0}
