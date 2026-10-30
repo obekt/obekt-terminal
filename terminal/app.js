@@ -352,22 +352,22 @@
     const out = [];
     const isMom = ((D.perp || {}).strategy) === "momentum";
     if (isMom) {
-      // v5.0-mom: momentum-native decision rows — no Jev call exists to score.
+      // v6.0-fade: fade-native decision rows — no Jev call exists to score.
       const lm = (D.perp || {}).last_mom || {};
-      const fmtLegs = (arr) => (arr || []).map((x) => x[0] + " " + (x[1] > 0 ? "+" : "") + x[1] + "%/14d").join("  ·  ") || "\u2014";
+      const fmtLegs = (arr) => (arr || []).map((x) => x[0] + " " + (x[1] > 0 ? "+" : "") + x[1] + "%/48h").join("  ·  ") || "\u2014";
       const anchor = (D.perp || {}).mom_anchor;
       let nextRb = "\u2014";
       if (anchor) {
-        const due = new Date(anchor).getTime() + 6 * 3600 * 1000;
+        const due = new Date(anchor).getTime() + 24 * 3600 * 1000;
         const hrs = (due - Date.now()) / 3600000;
         nextRb = hrs <= 0 ? "DUE \u2014 next cycle" : "in " + hrs.toFixed(1) + "h (" + new Date(due).toISOString().slice(11, 16) + " UTC)";
       }
-      out.push(gateRow("XS MOMENTUM \u2014 RANK 14d RETURN", true,
-        "universe " + (lm.n_universe || "?") + " most-liquid XPERPs \u00b7 ranked " + (lm.n_ranked || "?"), false));
-      out.push(gateRow("LONG STRONGEST \u00d72", true, fmtLegs(lm.longs), false));
-      out.push(gateRow("SHORT WEAKEST \u00d72", true, fmtLegs(lm.shorts), false));
-      out.push(gateRow("HOLD 6h \u2192 FULL REBALANCE", true, "next " + nextRb, false));
-      out.push(gateRow("PROTECTIVE STOP 1.5%", true, "server OCO + 5-min poll backup \u00b7 no TP \u2014 winners run to rebalance", false));
+      out.push(gateRow("XS FADE \u2014 RANK 48h RETURN, FADE THE EXTREMES", true,
+        "universe " + (lm.n_universe || "?") + " most-liquid XPERPs \u00b7 ranked " + (lm.n_ranked || "?") + " \u00b7 |48h| \u22655% gate", false));
+      out.push(gateRow("LONG BIGGEST 48h LOSERS (\u22642)", true, fmtLegs(lm.longs), false));
+      out.push(gateRow("SHORT BIGGEST 48h WINNERS (\u22642)", true, fmtLegs(lm.shorts), false));
+      out.push(gateRow("HOLD 24h \u2192 FULL REBALANCE", true, "next " + nextRb, false));
+      out.push(gateRow("TP 3% + CATASTROPHIC SL 15%", true, "server OCO + 5-min poll backup \u00b7 mean-reversion target, wide disaster stop", false));
     } else if (j && j.criteria) {
       const c = j.criteria;
       const na = !j.chosen_inst;

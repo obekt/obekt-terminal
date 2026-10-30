@@ -528,6 +528,44 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
   windows (full, OOS halves, recent-30/50d) over the single best row; and
   throughput is itself a legitimate objective when the operator wants
   learning speed — more legs/day reaches the pre-committed gate sooner.
+- **v6.0-fade (10-30) — MOMENTUM REPLACED BY 48h MEAN-REVERSION, ALL-IN 2x**:
+  operator verdict on the swings tape ("trading is still losing... go all in and
+  try something new... you can spend it all... or you can win big") pulled the
+  v5.2 kill-gate forward. Live evidence: 63 closes / −0.63 USDC realized, 39
+  server-SL fills netting −10.48 while held-to-rebalance exits were +9.8 — 14d
+  momentum kept entering local extremes into chop, and the refreshed grid's
+  last-30d for the live config had flipped to −0.43%/d. Candidate sweep (same
+  harness + cache, 27 coins × 100d 1H OHLC): the 48h FADE family was the only
+  one positive in EVERY window — all six L48 raw variants passed the
+  both-OOS-halves rule (thr 3/5/8 × H12/H24), while mom L336 H6 measured
+  −0.43%/d l30 and blind controls (all-short −0.50, all-long +0.30 with a
+  negative OOS2, random −0.47) confirmed it was signal, not beta. Winner:
+  L48 thr5 H24 cap2 (the 2 MOST extreme movers, long losers / short winners)
+  TP3 SL-none: +0.481%/d, OOS1 +0.499 / OOS2 +0.475 / l30 +0.906 / l50 +0.475.
+  Tail work decided the live geometry: naked worst leg −26.4%; a 15%
+  CATASTROPHIC stop costs only −0.013%/d (6 fills/191 legs) and caps worst-day
+  at −8.7%, maxDD −22%/96d; 2×-fee stress survives (+0.367%/d). Chosen over
+  H12 TP5 (+0.409%/d but worst day −16.4%, maxDD −29.5%) and cap4 (edge lives
+  in the two most extreme names). Sizing ALL-IN per operator authorization:
+  2 legs × ~98% equity notional at PERP_LEV=2 isolated (~49% equity margin/leg,
+  liq ~50% away, far beyond SL15); MAX_NOTIONAL_USD back to bug-guard duty
+  (250). Deploy: engine constants + fade selection in scan_ranks (legs = top-2
+  |48h|≥5%; longs/shorts log tuples keep the deck's data shape), ENGINE_VERSION
+  in both files, desk-note engine description, gates-panel rows + 24h countdown
+  literal, breaker day_equity_start RE-BASED to current equity at cutover (the
+  capital-move rule), fresh mom_state anchor, rank cache deleted (a stale
+  momentum-pick cache would have been traded as a fade pick). First supervised
+  cycle: closed the v5.2 remainder, opened INTC +$118 & SOXL +$121 longs
+  (−31.4%/−27.8% 48h), both OCO TP3/SL15 armed (algo_ok true, algos_pending 2),
+  lev 2 verified. Kill-gate v6.0 (pre-registered): 15 rebalances (~15d at H24)
+  OR 12 days, whichever first, live realized net ≤ 0 → close/replace; mechanics
+  review day 3. Live expectation: OOS1 +0.50%/d at 1x-equivalent (~+1.0%/d at
+  2x); honest caveat — at 2x a double-stop day ≈ −30% equity and the −8% daily
+  breaker is a cycle-time backstop, not an intraday guarantee. LESSON: in a
+  chop regime the fade of the SAME rank signal momentum buys is the side with
+  the edge — re-run the family sweep (signal AND its inverse) at every regime
+  complaint, and let the tail table (worst leg/day, maxDD) pick the geometry,
+  not the headline %/d.
 
 ## 3. Pilot architecture (v3 momentum regime, 09-29; v3.1 §2c supersedes universe+bracket bits)
 

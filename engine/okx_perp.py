@@ -9,8 +9,8 @@ runs fully isolated state:
   - own risk     : perp_risk_state.json (daily USDC-equity breaker, -8%)
   - own kill     : STOP_PERP (breaker) + respects shared STOP (all engines halt)
   - collateral   : USDC only (PERP_COLLATERAL_CCY); EUR spot bankroll untouched
-  - margin mode  : ISOLATED at PERP_LEV=1x — a losing position can only eat its
-                   own margin, never the account
+  - margin mode  : ISOLATED at PERP_LEV=2x (v6.0-fade all-in, operator 10-30) —
+                   a losing position can only eat its own margin, never the account
 
 Why X-Perps (verified live 10-15): EEA account post-unlock (acctLv=2, X-Perp
 appropriateness assessment passed) can trade 242 XPERP contracts via API. Fees
@@ -34,10 +34,9 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v5.2-mom"  # v4.9.5 (10-24): prompt reframe only —
-# recent-trades clause softened to informational + active-EV instruction added
-# (A/B on captured state: p(no_trade) 0.53-0.55 -> 0.28-0.36, same state).
-# Thresholds UNTOUCHED; calibration count restarts at v4.9.5 per the v4.8 rule.
+ENGINE_VERSION = "v6.0-fade"  # v6.0 (10-30): 48h mean-reversion fade replaces v5.2-mom —
+# live momentum verdict: -0.63 realized/63 closes, 39 SL fills, l30 backtest flipped
+# negative; fade grid positive in EVERY window (see okx_mom.py docstring for the table).
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -79,7 +78,9 @@ MIN_VOL30_PCT = 0.30   # v4.9: 450 rejects since 10-17 had median vol30 0.27;
                        # ~0.6% TP while admitting the bulk of the opportunity set.           # realized 30m range reachability gate
 
 # ---------------- risk / sizing ----------------
-PERP_LEV = "1"                 # isolated leverage; 1x = margin == notional
+PERP_LEV = "2"                 # isolated leverage; v6.0-fade ALL-IN (operator 10-30:
+# "go all in... you can spend it all... win big"). 2x isolated: liqPx ~50% away,
+# still far beyond the 15% catastrophic stop; margin/leg ≈ 49% of equity, 2 legs.
 # FULL-CAPITAL (10-15, operator directive: "if you see opportunity use entire
 # capital — spot or short, it's trades"). Was 0.70 + a $25 notional cap, sized
 # as a liquidation buffer. That buffer protects against a risk this book does not
@@ -97,8 +98,8 @@ MAX_NOTIONAL_FRAC = 0.98       # of USDC equity — deploy (nearly) all of it
 # the sample still accrues at ~1/5 the burn. GATE: at n>=30 run pnl_replay; if no
 # edge, close the book and park USDC in flexible savings — do NOT re-size up
 # before that review.
-MAX_NOTIONAL_USD = 30.0        # burn-in cap (see above); also a bug guard
-                               # against a garbage usdc_equity() read
+MAX_NOTIONAL_USD = 250.0       # v6.0-fade: bug guard only against a garbage usdc_equity()
+                               # read; real per-leg budget = eq*0.98*lev/2 ≈ $120 at eq $124
 MAX_OPEN = 4             # v5.1 (10-26): 4 slots x $30 = up to $120 of ~$128 equity;
                          # headroom kept so the last entry can't bounce on avail margin
 MAX_ENTRIES_PER_CYCLE = 2  # v4.9.6: cycle() loop below now real (break->continue on fill)

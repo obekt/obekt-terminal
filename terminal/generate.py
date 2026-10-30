@@ -1458,11 +1458,13 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     _spot_retired = SPOT_BOOK_RETIRED
     _is_mom = (perp or {}).get("strategy") == "momentum"
     _engine_desc = (
-        "The engine: a DETERMINISTIC cross-sectional momentum strategy (v5 momentum engine) — the most liquid "
-        "XPERPs are ranked by 14-day return, long the strongest 2 / short the weakest 2, 6h hold then "
-        "full rebalance, 1.5% protective stop (server OCO + poll backup). No LLM participates in trade "
-        "decisions; exits are the stop or the rebalance. It replaced the Jev LLM signal on 2026-10-25 "
-        "after that signal's pre-committed kill-gate review found no edge.\n\n"
+        "The engine: a DETERMINISTIC cross-sectional MEAN-REVERSION (fade) strategy (v6 fade engine) — the most "
+        "liquid XPERPs are ranked by 48-hour return; the 2 most extreme movers (|48h| ≥ 5%) are FADED: long the "
+        "biggest losers, short the biggest winners, 24h hold then full rebalance, TP 3% + catastrophic SL 15% "
+        "(server OCO + poll backup), ~2x isolated all-in sizing (operator-authorized). No LLM participates in "
+        "trade decisions; exits are the TP, the disaster stop or the rebalance. It replaced the v5 momentum book "
+        "on 2026-10-30 after momentum's live kill-gate window went negative in the chop regime; the Jev LLM "
+        "signal was retired 2026-10-25 (no edge at its own kill-gate review).\n\n"
     ) if _is_mom else (
         "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
         "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text, "

@@ -1,18 +1,35 @@
 #!/usr/bin/env python3
-"""okx_mom.py — v5.0-mom: deterministic cross-sectional momentum engine for the
-OKX EEA X-Perp book. Replaces the Jev LLM signal (kill-gated 10-25: 79 closes,
-net -1.47 USDC, gross +0.03%/trade vs 0.086% cost) with the backtested XS
-momentum signal: 14d lookback rank across the 30 most liquid XPERPs, long
-top-2 / short bottom-2, 6h hold, 1.5% protective stop.
+"""okx_mom.py — v6.0-fade: deterministic cross-sectional 48h MEAN-REVERSION (fade)
+engine for the OKX EEA X-Perp book. Replaces v5.2-mom (operator directive 10-30:
+"trading is still losing... go all in and try something new"; live verdict: 63
+closes, realized -0.63 USDC, 39 SL fills -10.48, 14d momentum kept entering local
+extremes into a chop tape — backtest l30 for L336 H6 had already flipped to
+-0.43%/d).
 
-Backtest evidence (10-25, 25 coins x 100d hourly OHLC, taker 0.05%/leg,
-intrabar stops w/ gap-through conservatism, OOS time split):
-  XS L336 H24 K2 stop1.5: +0.857%/d net, OOS halves +0.440 / +1.285 (both >0)
-  stop-robust: 1.0/1.5/2.0/3.0 all << ; stops IMPROVE the raw signal (+0.779).
-Known biases (honest): universe = top-30 by volume AS OF 10-25 (selection
-bias inflates the second half); funding excluded (positive-funding names make
-the short leg a mild tailwind); 100d window. Conservative live expectation:
-the OOS-first-half number (~+0.4%/d on deployed), not the full-sample one.
+Signal (48h fade): rank the 30 most liquid XPERPs by 48h return; any coin that
+moved >= 5% (either way) is a fade candidate — LONG the losers / SHORT the
+winners, taking the 2 MOST EXTREME movers (cap2), hold 24h, TP 3% (server OCO),
+catastrophic SL 15% (server OCO + poll backup). All-in sizing: ~equity x 0.98
+notional per leg at 2x isolated (~49% equity margin/leg) — OPERATOR-AUTHORIZED
+10-30 ("go all in... you can spend it all... win big").
+
+Backtest evidence (10-30, 27 coins x 100d hourly OHLC 07-22..10-30, taker
+0.05%/leg, intrabar SL/TP, gap-conservative, SL-first-in-bar; /tmp/mr_grid.py +
+mr_stage3.py + mr_stage4.py on VPS, cache /tmp/xperp_ohlc_1h.json):
+  L48 thr5 H24 cap2 TP3 SL-none: +0.481%/d, OOS1 +0.499 / OOS2 +0.475 /
+    l30 +0.906 / l50 +0.475 — positive in EVERY window (both-halves rule '<<');
+    family-robust: all six L48 raw variants passed '<<' (thr 3/5/8 x H12/24).
+  SL15 catastrophe costs -0.013%/d (6 fills/191 legs), caps worst leg -26%→-15%,
+    worst UTC day -8.65%, maxDD -22.1%/96d; 2x-fee stress +0.367%/d — survives.
+  Chosen over H12 TP5 (+0.409%/d but worst day -16.4%, maxDD -29.5%) and over
+    cap4 (edge lives in the 2 MOST extreme names; cap4 dilutes: OOS2 +0.013).
+  Blind controls (same window/geometry): all-short -0.50%/d, all-long +0.30
+    (OOS2-negative), random H24 -0.47 — the fade beats every blind baseline.
+Known biases (honest): universe = top-30 by volume AS OF 10-30 (selection bias
+inflates OOS2/l30 — live expectation = OOS1 +0.50%/d at 1x, ~+1.0%/d at 2x);
+funding excluded (mixed-side, H24 ≈ neutral); SL15 tail is REAL (fading knives:
+min leg -15.1% even with the stop); at 2x a double-stop day ≈ -30% equity,
+-8% daily breaker is the software backstop, not an intraday guarantee.
 
 Reuses okx_perp execution machinery (open_perp post_only+IOC fallback, attached
 OCO, close_perp_market with realized-fee capture, logrec -> perp_log.jsonl,
@@ -20,10 +37,11 @@ meta -> perp_positions.json, status snapshot -> perp_status.json) so the public
 deck keeps working unchanged. NO Jev/LLM calls: fully deterministic, ~0 cost.
 
 Modes: cycle (manage+rebalance+status), status, ranks (debug scan).
-Kill-gate v5.2: at 30 rebalance cycles (~7.5d at H6) OR 10 days, compare live net
-%/day vs the backtest recent-window expectation (H6 row: +1.0%/d last-50d, +2.1%/d
-last-30d, full-window +0.60; OOS1 regime was -0.34 — hold-window sensitive).
-If live <= 0 at the gate, close/replace the book (pre-authorized pattern).
+Kill-gate v6.0 (pre-registered 10-30): at 15 rebalance cycles (~15d at H24) OR
+12 days, whichever FIRST: live realized net <= 0 → close/replace (pre-authorized
+pattern). Mechanics review day 3 (fills, OCO arms, sizing, breaker sanity).
+Live expectation to beat: OOS1 +0.50%/d at 1x-equivalent (~+1.0%/d at 2x on
+deployed equity); l30 said +0.91 — regime may not hold, judge at the gate.
 """
 import json, os, sys, time, datetime
 
@@ -32,15 +50,16 @@ sys.path.insert(0, HERE)
 import okx_jev as J          # api/ticker/instruments helpers (EEA key auth)
 import okx_perp as P         # execution machinery + files + constants
 
-ENGINE_VERSION = "v5.2-mom"
+ENGINE_VERSION = "v6.0-fade"
 DRY = P.DRY                   # --dry-run passthrough (smoke tests only)
 
-# ---- strategy parameters (from the 10-25 stop-aware backtest) -------------
-MOM_LOOKBACK_H   = 336        # 14d rank lookback (L336 in hourly bars)
-MOM_HOLD_MIN     = 360        # 6h hold, then full rebalance (H6) — v5.2 grid 10-26
-MOM_K            = 2          # long top-2 / short bottom-2 (K2) = 4 slots
-MOM_SL_PCT       = 1.5        # protective server-side stop (best OOS row)
-MOM_TP_PCT       = 25.0       # far TP stub (25%): winners run to the 24h rebalance; 99% broke
+# ---- strategy parameters (from the 10-30 fade grid, see docstring) ----------
+MOM_LOOKBACK_H   = 48         # 48h rank lookback (L48 in hourly bars)
+FADE_THR_PCT     = 5.0        # |48h move| >= 5% required to be a fade candidate
+MOM_HOLD_MIN     = 1440       # 24h hold, then full rebalance (H24)
+MOM_K            = 2          # cap2: the 2 MOST EXTREME movers total (not per side)
+MOM_SL_PCT       = 15.0       # catastrophic stop (backtest: costs -0.013%/d, caps -26% tail)
+MOM_TP_PCT       = 3.0        # reversion target (server OCO) — the edge IS the TP3 grind
 MOM_UNIVERSE     = 30         # rank within the 30 most liquid XPERPs
 MOM_MIN_VOL24H   = 3_000_000  # USD turnover floor (volCcy24h*last — UNIT FIX)
 MOM_RANK_CACHE_S = 1800       # rank scan TTL (rebalance is 24h; 30m is ample)
@@ -55,9 +74,10 @@ def log(rec):
 # ---- universe + ranking ----------------------------------------------------
 
 def scan_ranks(force=False):
-    """Top-MOM_UNIVERSE XPERPs by 24h USD turnover; rank by 14d return.
-    Uses 4H candles (84 bars = 336h) so one request per instrument covers the
-    lookback; /market/candles rows are NEWEST-FIRST."""
+    """Top-MOM_UNIVERSE XPERPs by 24h USD turnover; rank by 48h return; FADE:
+    legs = the MOM_K most extreme |48h| movers above FADE_THR_PCT — long the
+    losers, short the winners. Uses 4H candles (14 bars = 48h+) so one request
+    per instrument covers the lookback; /market/candles rows are NEWEST-FIRST."""
     try:
         c = json.load(open(RANK_CACHE_FILE))
         if not force and time.time() - c.get("scanned", 0) < MOM_RANK_CACHE_S:
@@ -96,31 +116,43 @@ def scan_ranks(force=False):
         except Exception as e:
             log({"event": "mom_scan_err", "inst": inst, "err": str(e)[:120]})
     ranked.sort(key=lambda r: -r["chg_lookback_pct"])
+    # FADE selection: |48h| >= FADE_THR_PCT, most extreme first, cap MOM_K legs.
+    sig = [r for r in ranked if abs(r["chg_lookback_pct"]) >= FADE_THR_PCT]
+    sig.sort(key=lambda r: -abs(r["chg_lookback_pct"]))
+    legs = sig[:MOM_K]
     out = {"scanned": time.time(), "n_universe": len(universe), "ranked": ranked,
-           "longs": [r["inst"] for r in ranked[:MOM_K]],
-           "shorts": [r["inst"] for r in ranked[-MOM_K:]] if len(ranked) >= 2 * MOM_K + 2 else []}
+           "legs": [(r["inst"], "long" if r["chg_lookback_pct"] < 0 else "short",
+                     r["chg_lookback_pct"]) for r in legs],
+           "longs": [r["inst"] for r in legs if r["chg_lookback_pct"] < 0],
+           "shorts": [r["inst"] for r in legs if r["chg_lookback_pct"] > 0]}
     if not DRY:
         tmp = RANK_CACHE_FILE + ".tmp"
         json.dump(out, open(tmp, "w"))
         os.replace(tmp, RANK_CACHE_FILE)
     log({"event": "mom_scan", "n_universe": out["n_universe"], "n_ranked": len(ranked),
-         "longs": [(r["base"], r["chg_lookback_pct"]) for r in ranked[:MOM_K]],
-         "shorts": [(r["base"], r["chg_lookback_pct"]) for r in ranked[-MOM_K:]],
-         "top": [(r["base"], r["chg_lookback_pct"]) for r in ranked[:5]]})
+         "signal": "fade48", "thr_pct": FADE_THR_PCT,
+         "legs": [(r["base"], r["chg_lookback_pct"],
+                   "long" if r["chg_lookback_pct"] < 0 else "short") for r in legs],
+         # generate.py's last_mom reads longs/shorts as (base, chg) tuples — keep the shape
+         "longs": [(r["base"], r["chg_lookback_pct"]) for r in legs if r["chg_lookback_pct"] < 0],
+         "shorts": [(r["base"], r["chg_lookback_pct"]) for r in legs if r["chg_lookback_pct"] > 0],
+         "top": [(r["base"], r["chg_lookback_pct"]) for r in ranked[:5]],
+         "bottom": [(r["base"], r["chg_lookback_pct"]) for r in ranked[-5:]]})
     return out
 
 # ---- open / close ----------------------------------------------------------
 
 def _open_one(inst, side, ranks_row):
-    """One $25-slot entry via the shared execution path (post_only 25s -> IOC
-    fallback, attached OCO SL). Returns True on fill."""
+    """One fade-leg entry via the shared execution path (post_only 25s -> IOC
+    fallback, attached OCO TP3/SL15). All-in sizing: each of MOM_K legs gets
+    equity*0.98*lev/MOM_K notional (operator-authorized 10-30). Returns True on fill."""
     try:
         t = J.ticker(inst)
         px = float(t["last"])
         ins = P.instr(inst)
         ctval = float(ins["ctVal"])
         eq = P.usdc_equity()
-        budget = min(eq * P.MAX_NOTIONAL_FRAC * float(P.PERP_LEV), P.MAX_NOTIONAL_USD)
+        budget = min(eq * P.MAX_NOTIONAL_FRAC * float(P.PERP_LEV) / MOM_K, P.MAX_NOTIONAL_USD)
         notional_per_ct = ctval * px
         # szfix 10-29: int() truncation dropped legs on expensive instruments
         # (SKHYNIX ~$1149/ct, lotSz 0.001 -> int(30//1149)=0 -> OKX 51000 sz
@@ -134,7 +166,7 @@ def _open_one(inst, side, ranks_row):
         if contracts <= 0 or notional > budget * 1.15 or notional > P.MAX_NOTIONAL_USD * 1.15:
             log({"event": "mom_skip", "inst": inst, "why": f"min size notional {notional:.1f} > budget {budget:.1f}"})
             return False
-        bk = {"cost_pct": round(MOM_SL_PCT / 15, 3), "tp_pct": MOM_TP_PCT, "sl_pct": MOM_SL_PCT,
+        bk = {"cost_pct": 0.1, "tp_pct": MOM_TP_PCT, "sl_pct": MOM_SL_PCT,
               "trail_arm_pct": 999.0, "trail_giveback_pct": 999.0, "trail_floor_pct": 999.0}
         od, err = P.open_perp(inst, side, contracts, px, bk, dry=DRY)
         if err == "unfilled" or od is None:
@@ -198,9 +230,10 @@ def _server_exit_sync(inst, m, meta):
 
 def manage_mom():
     """Sync server-side exits + poll-backup stop. No trail/time-stop/stale-exit:
-    the ONLY exits in the backtest are the 1.5% stop and the 24h rebalance.
-    The poll stop is the backup for a failed OCO attach (algo_ok=False) — the
-    spot-book lesson: never assume the server-side bracket is live."""
+    the ONLY exits in the backtest are the 15% catastrophic stop, the 3% TP and
+    the 24h rebalance. The poll stop is the backup for a failed OCO attach
+    (algo_ok=False) — the spot-book lesson: never assume the server-side bracket
+    is live."""
     meta = P.load_meta()
     for inst, m in list(meta.items()):
         if m.get("strategy") != "mom":
@@ -303,10 +336,14 @@ def cycle():
         _save_mom_state({**_load_mom_state(), "last_rebalance_ts": P.now_iso()})
         ranks = scan_ranks()
         by_inst = {r["inst"]: r for r in ranks["ranked"]}
-        if len(ranks["ranked"]) < 2 * MOM_K + 2:
+        if len(ranks["ranked"]) < 4:
             out["skipped"].append("universe too thin")
             log({"event": "mom_no_rebalance", "why": "universe too thin",
                  "n_ranked": len(ranks["ranked"])})
+        elif not ranks["legs"]:
+            out["skipped"].append(f"no |48h| >= {FADE_THR_PCT}% mover — flat is a position")
+            log({"event": "mom_no_rebalance", "why": "no fade signal",
+                 "n_ranked": len(ranks["ranked"]), "thr_pct": FADE_THR_PCT})
         else:
             for inst in ranks["longs"]:
                 if _open_one(inst, "long", by_inst.get(inst, {})):
@@ -338,7 +375,7 @@ def main():
         print(json.dumps(P.status(), indent=1, default=str))
     elif mode == "ranks":
         r = scan_ranks(force=True)
-        print(json.dumps({"longs": r["longs"], "shorts": r["shorts"],
+        print(json.dumps({"legs": r["legs"], "longs": r["longs"], "shorts": r["shorts"],
                           "top5": r["ranked"][:5], "bottom5": r["ranked"][-5:]}, indent=1))
     else:
         print(json.dumps(cycle(), indent=1, default=str))
