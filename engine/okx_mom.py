@@ -178,8 +178,17 @@ def _open_one(inst, side, ranks_row):
             return True
         fill_px = float(od.get("avgPx") or 0) or px
         fee = od.get("fee")
+        # PARTFIX 11-01: partial IOC/maker fills booked the REQUESTED size (TRX:
+        # meta 39 ct vs 8 held -> rebalance reduceOnly sz=39 would stick and leg
+        # PnL logs 5x-inflate). Book the real fill; log the shortfall.
+        actual_ct = float(od.get("accFillSz") or 0) or float(contracts)
+        if actual_ct < float(contracts):
+            notional = actual_ct * notional_per_ct
+            log({"event": "mom_partial_fill", "inst": inst, "side": side,
+                 "requested": float(contracts), "filled": actual_ct,
+                 "entry_type": od.get("entry_type")})
         meta = P.load_meta()
-        meta[inst] = {"opened_ts": P.now_iso(), "side": side, "contracts": float(contracts),
+        meta[inst] = {"opened_ts": P.now_iso(), "side": side, "contracts": actual_ct,
                       "entry_ref": fill_px, "notional_usd": round(notional, 2),
                       "strategy": "mom", "mom_rank_chg_pct": ranks_row.get("chg_lookback_pct"),
                       "jev_conf": None, "jev_margin": None, "jev_noul": None,
