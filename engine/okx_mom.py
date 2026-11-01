@@ -199,7 +199,7 @@ def _open_one(inst, side, ranks_row):
         except Exception:
             pass
         P.save_meta(meta)
-        log({"event": "perp_open", "inst": inst, "side": side, "contracts": contracts,
+        log({"event": "perp_open", "inst": inst, "side": side, "contracts": actual_ct,
              "notional_usd": round(notional, 2), "fill_px": fill_px, "conf": None,
              "margin": None, "noul": None, "algo_ok": meta[inst]["algo_ok"],
              "realized_fee": fee, "entry_type": od.get("entry_type"),
