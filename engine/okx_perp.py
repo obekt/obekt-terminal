@@ -524,10 +524,17 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
         acc = float(od.get("accFillSz") or 0)
         if st in ("live", "partially_filled"):
             J.cancel_order(inst, o["ordId"])
-        if acc >= float(ins.get("minSz") or 1):
-            od = J.order_detail(inst, o["ordId"])
-            od["entry_type"] = "maker_partial"
-            return od, "partial"
+        # SHFALL 11-03: a partial maker fill used to END here ("maker_partial"),
+        # leaving the book chronically under-size (2 of 3 v6.0 entries: LIT 1/36,
+        # NEAR 17/29). The unfilled REMAINDER now rides the one-shot IOC below
+        # (taker 0.05%; grid survives 2x fee stress) and the two fills MERGE.
+        maker_od = J.order_detail(inst, o["ordId"]) if acc > 0 else None
+        if maker_od:
+            acc = float(maker_od.get("accFillSz") or acc)
+        shortfall = float(sz) - acc
+        if shortfall <= 0:
+            maker_od["entry_type"] = "maker"
+            return maker_od, None
         # v4.9 IOC-TAKER FALLBACK: maker-only was the v3.8 SPOT lesson (0.2% taker
         # made chasing EV-negative). Perp taker is 0.05% (rt 0.10% vs 0.07% maker):
         # 8 of 10 v4.8 attempts died unfilled = signals wasted. One IOC at the
@@ -545,7 +552,15 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
                 algo2 = {k: v for k, v in algo.items()}
                 algo2["tpTriggerPx"] = fpx(rstep(ref * (1 + tp_mult * bk["tp_pct"] / 100), tick_r, down=(side == "short")))
                 algo2["slTriggerPx"] = fpx(rstep(ref * (1 - tp_mult * bk["sl_pct"] / 100), tick_r, down=(side == "long")))
+                sz2 = rstep(shortfall, lot, down=True)
+                if sz2 <= 0:
+                    if maker_od:
+                        maker_od["entry_type"] = "maker_partial"
+                        return maker_od, "partial"
+                    sz2 = float(sz)
+                algo2["sz"] = str(sz2)
                 body2 = {k: v for k, v in body.items()}
+                body2["sz"] = str(sz2)
                 body2["ordType"] = "ioc"
                 body2["px"] = fpx(rstep(ref, tick_r, down=(entry_side == "buy")))
                 body2["attachAlgoOrds"] = [algo2]
@@ -559,16 +574,29 @@ def open_perp(inst, side, contracts, px, bk, dry=False):
                         if st2 in ("live", "partially_filled"):
                             J.cancel_order(inst, o2["ordId"])
                         od2 = J.order_detail(inst, o2["ordId"])
-                        od2["entry_type"] = "taker_ioc"
+                        acc2 = float(od2.get("accFillSz") or acc2)
+                        if acc > 0:
+                            apx1 = float(maker_od.get("avgPx") or 0)
+                            apx2 = float(od2.get("avgPx") or 0) or apx1
+                            comb = acc + acc2
+                            od2["avgPx"] = f"{(apx1 * acc + apx2 * acc2) / comb:.12f}".rstrip("0").rstrip(".")
+                            od2["accFillSz"] = f"{comb:.12f}".rstrip("0").rstrip(".")
+                            od2["entry_type"] = "maker+ioc"
+                        else:
+                            comb = acc2
+                            od2["entry_type"] = "taker_ioc"
                         logrec({"event": "perp_entry_taker_fallback", "inst": inst,
-                                "side": side, "ref": ref})
-                        return od2, ("partial" if st2 == "partially_filled" else None)
+                                "side": side, "ref": ref, "maker_acc": acc, "ioc_acc": acc2})
+                        return od2, ("partial" if comb < float(sz) else None)
                     logrec({"event": "perp_entry_ioc_unfilled", "inst": inst, "side": side})
                 else:
                     logrec({"event": "perp_entry_ioc_err", "inst": inst,
                             "err": f"{o2.get('sCode')}: {o2.get('sMsg')}"[:120]})
         except Exception as e:
             logrec({"event": "perp_entry_ioc_err", "inst": inst, "err": str(e)[:120]})
+        if maker_od:
+            maker_od["entry_type"] = "maker_partial"
+            return maker_od, "partial"
         od["entry_type"] = "maker_unfilled"
         return od, "unfilled"
     od["entry_type"] = "maker"
