@@ -331,8 +331,13 @@ def close_all(meta, reason):
 
 def cycle():
     if P.halted():
-        log({"event": "perp_skip", "why": "halted (STOP or STOP_PERP)"})
-        return {"halted": True}
+        # UTC-rollover auto-clear for the daily-breaker STOP lives inside
+        # check_breaker(); run it first so a breaker STOP only lasts the day
+        # it fired on (bug 2026-11-06: halted 24h+ past its UTC day).
+        P.check_breaker()
+        if P.halted():
+            log({"event": "perp_skip", "why": "halted (STOP or STOP_PERP)"})
+            return {"halted": True}
     P.check_breaker()
     if P.halted():
         return {"halted": True, "why": "breaker"}
