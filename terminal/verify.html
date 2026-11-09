@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="index,follow">
+<title>PROOF OF TRADES — Obekt Terminal</title>
+<meta name="description" content="The trader.obekt.com track record as a signed, hash-chained, GitHub-anchored log. Verify it yourself — trust nothing, check everything.">
+<link rel="stylesheet" href="style.css">
+<style>
+  body{padding-top:64px}
+  .vf{max-width:1000px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
+  .vf h1{color:#7fd88f;font-size:20px;letter-spacing:.12em;margin:0}
+  .vf h2{color:#9fbf9f;font-size:13px;letter-spacing:.1em;margin:18px 0 6px}
+  .vf p,.vf li{color:#b8ccb8;font-size:13px;line-height:1.55}
+  .vf .warn{color:#e6c97f}
+  .vf pre{background:#0a120a;border:1px solid #1e351e;padding:12px;overflow-x:auto;
+          font-size:12px;color:#8fe08f;white-space:pre-wrap;word-break:break-all}
+  .vf table{width:100%;border-collapse:collapse;font-size:12px}
+  .vf th{color:#5f7f5f;text-align:left;font-weight:400;border-bottom:1px solid #1e351e;padding:4px 8px}
+  .vf td{border-bottom:1px solid #142014;padding:4px 8px;color:#cfe3cf}
+  .vf a{color:#7fd88f}
+  #chain-status{color:#e6c97f}
+</style>
+</head>
+<body>
+<header id="topbar">
+  <div class="logo">▚ OBEKT<span>TERMINAL</span></div>
+  <div class="topmeta live"><span class="dot"></span>PROOF OF TRADES</div>
+</header>
+<main class="vf">
+  <h1>PROOF OF TRADES</h1>
+  <p>Every day at 00:03 UTC, an isolated script on our server reads the
+  <b>exchange's own account equity and open positions straight from OKX</b>,
+  signs that snapshot with an ed25519 key, and appends it to a hash chain — each
+  line seals the previous one. The current chain head is additionally committed
+  to our <a href="https://github.com/obekt/obekt-terminal/blob/main/verify/HEAD.json">public
+  GitHub repo</a>, so the head is timestamped by a third party (GitHub's commit
+  history). Editing history later would break every later signature, and
+  re-signing the whole chain would produce a head that no longer matches the
+  GitHub anchor.</p>
+
+  <h2>WHAT THIS PROVES · WHAT IT DOES NOT</h2>
+  <ul>
+    <li><b>Proves:</b> the equity numbers below were reported by the exchange and
+    signed by the key holder, in order, without edits or gaps, on the stated dates.</li>
+    <li><b>Does not prove:</b> that the strategy is any good, that returns will
+    continue, or that the key holder won't quit tomorrow. Bring your own skepticism.</li>
+  </ul>
+
+  <h2>LIVE CHAIN <span id="chain-status">fetching…</span></h2>
+  <table id="chain-table">
+    <thead><tr><th>#</th><th>UTC</th><th>ENGINE</th><th>EQUITY USDC</th><th>uPnL USDC</th><th>OPEN</th></tr></thead>
+    <tbody><tr><td colspan="6">—</td></tr></tbody>
+  </table>
+
+  <h2>VERIFY IT YOURSELF (DO THIS)</h2>
+  <p>Do not trust this page. The script below re-checks every signature and the
+  whole chain against the public key <b>embedded in the script itself</b>, then
+  compares the head with the GitHub anchor:</p>
+  <pre>pip install cryptography
+curl -sL https://trader.obekt.com/verify.py | python3 -</pre>
+  <p class="warn">The trust anchor is the public key published in the open-source
+  repo (<a href="https://github.com/obekt/obekt-terminal/blob/main/verify/pub.pem">verify/pub.pem</a>)
+  and pinned inside verify.py. If trader.obekt.com and GitHub ever disagree,
+  believe GitHub — and tell us.</p>
+
+  <h2>PUBLIC KEY (pinned in the repo and inside verify.py)</h2>
+  <pre id="pubkey">-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAIvrC4MoVuFwyPpDTGNqlU9dJvn5A6lpPN9IxZ75rOr8=
+-----END PUBLIC KEY-----</pre>
+
+  <p style="margin-top:26px"><a href="/">← BACK TO THE TERMINAL</a></p>
+</main>
+<script>
+fetch('chain.jsonl').then(function(r){return r.text();}).then(function(t){
+  var lines=t.trim().split('\n').filter(Boolean).slice(-14).reverse();
+  var tb=document.querySelector('#chain-table tbody'),rows='';
+  lines.forEach(function(l){
+    try{var e=JSON.parse(l),p=e.payload;
+      rows+='<tr><td>'+e.seq+'</td><td>'+e.ts.slice(0,16).replace('T',' ')+
+        '</td><td>'+(p.engine||'?')+'</td><td>'+(p.okx_equity_usdc!=null?p.okx_equity_usdc.toFixed(2):'—')+
+        '</td><td>'+(p.okx_unrealized_pnl_usdc!=null?p.okx_unrealized_pnl_usdc.toFixed(2):'—')+
+        '</td><td>'+((p.open_positions||[]).length)+'</td></tr>';}catch(err){}
+  });
+  tb.innerHTML=rows||'<tr><td colspan="6">chain not yet seeded</td></tr>';
+  document.getElementById('chain-status').textContent=
+    '('+lines.length+' most recent — fetch the full chain at /chain.jsonl)';
+}).catch(function(){document.getElementById('chain-status').textContent='unavailable';});
+</script>
+</body>
+</html>

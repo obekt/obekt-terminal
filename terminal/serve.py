@@ -18,6 +18,7 @@ The same var, exported before `python3 generate.py --og`, bakes absolute
 og:image URLs into a `index.public.html` you can deploy as `index.html`.
 """
 import http.server
+import json
 import os
 import re
 import socketserver
@@ -34,7 +35,7 @@ PORT = 8770
 PUBLIC_BASE = os.environ.get("PUBLIC_BASE", "").rstrip("/")
 # paths served from STATE_DIR rather than HERE
 GENERATED_PREFIXES = ("/dossiers/",)
-GENERATED_FILES = ("data.js", "data.json")
+GENERATED_FILES = ("data.js", "data.json", "chain.jsonl", "head.json")
 
 
 def absolutize_og(html):
@@ -73,7 +74,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         # data.js/dossiers must never be cached (live); static assets can be
         p = self.path.split("?")[0]
-        if p.endswith(("data.js", "data.json")) or p.startswith("/dossiers/"):
+        if (p.endswith(("data.js", "data.json", "chain.jsonl", "head.json"))
+                or p.startswith("/dossiers/")):
             self.send_header("Cache-Control", "no-store, must-revalidate")
         elif p == "/og.png":
             self.send_header("Cache-Control", "public, max-age=300")
@@ -100,6 +102,45 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception:
                 pass  # fall through to normal static handling
         return super().do_GET()
+
+    _wl_last = {}
+
+    def do_POST(self):
+        # Waitlist only: emails for the weekly track-record report. Stored in
+        # STATE_DIR/waitlist.jsonl. No third-party services, no tokens, nothing
+        # else on this box accepts POST.
+        if self.path.split("?")[0] != "/api/waitlist":
+            return self.send_error(404)
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n <= 0 or n > 1024:
+                return self.send_error(400)
+            body = json.loads(self.rfile.read(n).decode("utf-8", "replace"))
+            email = str(body.get("email", "")).strip().lower()[:254]
+            if not re.match(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$", email):
+                return self.send_error(400)
+            wl = os.path.join(STATE_DIR, "waitlist.jsonl")
+            try:
+                count = sum(1 for _ in open(wl))
+            except FileNotFoundError:
+                count = 0
+            if count > 50000:
+                return self.send_error(429)
+            ip = self.client_address[0]
+            nowt = time.time()
+            if nowt - self._wl_last.get(ip, 0) < 60:
+                return self.send_error(429)
+            self._wl_last[ip] = nowt
+            with open(wl, "a") as f:
+                f.write(json.dumps({"email": email, "ts": int(nowt), "ip": ip}) + "\n")
+            data = b'{"ok":true}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_error(400)
 
     def log_message(self, *a):
         pass

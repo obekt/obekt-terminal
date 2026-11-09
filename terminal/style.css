@@ -347,3 +347,19 @@ tr.row-short:hover td{background:#1a0806!important}
   body{font-size:11px}
   .hero-cell .hv{font-size:20px}.hero-big .hv{font-size:26px}
 }
+
+/* --- proof-of-trades + waitlist --- */
+a.proof-link{color:#7fd88f;text-decoration:none;border:1px solid #2e4a33;padding:2px 8px}
+a.proof-link:hover{background:#16281a}
+#waitlist{max-width:1400px;margin:10px auto 0;padding:8px 14px;display:flex;
+  gap:10px;align-items:center;flex-wrap:wrap;border-top:1px solid #1e2a1e;
+  font-size:11px;letter-spacing:.08em}
+#waitlist .wl-label{color:#7fd88f;font-weight:700}
+#wl-form{display:flex;gap:6px}
+#waitlist input{background:#0a120a;border:1px solid #23351f;color:#cfe3cf;
+  padding:4px 8px;font:inherit;min-width:220px}
+#waitlist button{background:#123312;border:1px solid #2e5a2e;color:#a8e6a8;
+  padding:4px 12px;font:inherit;cursor:pointer;letter-spacing:.1em}
+#waitlist button:hover{background:#1a4a1a}
+#wl-status{color:#e6c97f}
+#waitlist .wl-note{color:#4a5a4a;font-size:10px}

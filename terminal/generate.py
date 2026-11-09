@@ -1586,7 +1586,7 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         "You are the desk commentator for OBEKT TERMINAL, the Bloomberg-style observation dashboard of a "
         "LIVE autonomous crypto trading system trading REAL capital on OKX Europe (EEA), 5-min cycles. "
         "It runs ONE live book: X-PERPS — USD-settled MiFID expiry perps, two-way (LONG and SHORT), "
-        "USDC collateral, 1x isolated. "
+        "USDC collateral, 2x isolated. "
         "A second book, SPOT (EUR pairs, long-only), was RETIRED on 2026-10-15: trading_state."
         "spot_book_status says so and spot_book_why gives the reason. Its engine code and full trade "
         "history remain on the dashboard as a record, but it no longer trades — spot_open_positions will "

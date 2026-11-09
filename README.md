@@ -7,6 +7,7 @@
 **Open-source · Runs on a local LLM · Decisions cost fractions of a cent · Built by [Obekt AI Works](https://obekt.com)**
 
 ### 🔴 [**LIVE DEMO → trader.obekt.com**](https://trader.obekt.com) — watch the real system trade right now
+### 🔐 [**PROOF OF TRADES → trader.obekt.com/verify**](https://trader.obekt.com/verify) — daily signed track record, anchored on this repo; verify it in one command
 
 <img src="docs/screenshots/1.png" width="100%" alt="Obekt Terminal live dashboard"/>
 
@@ -305,6 +306,8 @@ This whole thing is written to be **operated by an AI agent**, not just a human.
 ├── docs/screenshots/       ← the images above
 ├── engine/                 ← the autonomous trader
 │   ├── okx_jev.py          ← the whole strategy: scan→gate→decide→execute→manage
+│   ├── okx_mom.py          ← the LIVE v6.x deterministic cross-sectional engine
+│   ├── verify_snapshot.py  ← daily signed equity snapshot (GET-only, isolated)
 │   ├── news_feed.py        ← keyless RSS catalyst feed (spot book only — retired)
 │   ├── social_feed.py      ← keyless Fear&Greed + CoinGecko sentiment (spot only)
 │   └── README.md
@@ -319,6 +322,22 @@ This whole thing is written to be **operated by an AI agent**, not just a human.
     ├── okx-trading/
     └── system-one-decisions/
 ```
+
+---
+
+## Proof of trades
+
+Every day at 00:03 UTC an isolated script reads the **exchange's own equity and
+open positions** (GET-only), signs them (ed25519) into a hash chain, and pins
+the chain head as a commit in this repo (`verify/HEAD.json`) — so the track
+record is timestamped by a third party and cannot be quietly rewritten.
+
+```bash
+pip install cryptography
+curl -sL https://trader.obekt.com/verify.py | python3 -
+```
+
+Full design and honest limits: [`verify/README.md`](verify/README.md).
 
 ---
 

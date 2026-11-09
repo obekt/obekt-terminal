@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="index,follow">
 <title>Obekt Autonomous Trading Platform — live telemetry</title>
-<meta name="description" content="A read-only Bloomberg-style terminal over a fully autonomous live crypto trading engine: local LLM desk, Jev System-One typed decisions, news/sentiment/macro injection, server-side risk exits. Open-source. Not financial advice — a pure experiment.">
+<meta name="description" content="A read-only Bloomberg-style terminal over a live deterministic crypto trading engine on real capital, with a cryptographically signed, GitHub-anchored track record. Open-source. Not financial advice — a pure experiment.">
 <meta property="og:title" content="OBEKT TERMINAL — watch an autonomous trading system think, live">
-<meta property="og:description" content="A real trading bot on real capital: every Jev decision, probability, news catalyst and fill, streamed into a Bloomberg-style terminal. Observation only — the machine runs itself. Click any ledger trade for the full decision replay.">
+<meta property="og:description" content="A real trading bot on real capital: every decision and fill streamed into a Bloomberg-style terminal, plus a daily signed, GitHub-anchored track record you can verify yourself. Observation only — the machine runs itself.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="og.png">
 <meta property="og:image:width" content="1200">
@@ -27,6 +27,7 @@
   <div class="logo">▚ OBEKT<span>TERMINAL</span></div>
   <div class="topmeta" id="engine-meta">ENGINE ———</div>
   <div class="topmeta" id="pos-badge">FLAT</div>
+  <a class="topmeta proof-link" href="/verify" title="Cryptographically signed track record, anchored on GitHub">✓ SIGNED LEDGER</a>
   <div class="topmeta live"><span class="dot"></span>LIVE TELEMETRY</div>
   <div class="topmeta" id="cycle-countdown">NEXT CYCLE ——:——</div>
   <div class="topmeta" id="clock">--:--:-- UTC</div>
@@ -45,7 +46,7 @@
   </section>
 
   <section class="panel wide" id="p-perp">
-    <h2>X-PERPS — THE LIVE BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 1x isolated · long &amp; short</em></h2>
+    <h2>X-PERPS — THE LIVE BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 2x isolated · long &amp; short</em></h2>
     <div class="body" id="perp-body">—</div>
   </section>
 
@@ -175,16 +176,42 @@
 
 </main>
 
+<div id="waitlist">
+  <span class="wl-label">WEEKLY TRACK-RECORD REPORT</span>
+  <form id="wl-form" autocomplete="email">
+    <input id="wl-email" type="email" placeholder="you@example.com" required maxlength="254">
+    <button type="submit">JOIN</button>
+  </form>
+  <span id="wl-status"></span>
+  <span class="wl-note">no spam, unsubscribe by replying — the machine writes the report itself</span>
+</div>
+
 <footer id="bottombar">
   <div id="contact">—</div>
   <a id="gh-link" href="https://github.com/obekt/obekt-terminal" rel="noopener"
      title="Open-source: the engine, this terminal, and the agent skills">⌥ SOURCE · github.com/obekt/obekt-terminal</a>
   <div id="gen">—</div>
 </footer>
-<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL, SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: OKX EUROPE PUBLIC FEED · DECISIONS: TYPESAFE JEV SYSTEM-ONE · DESK COPY: HALOGEN-QWEN3.8-FLASH-NEXT<span class="cursor">█</span></div>
+<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL, SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER, THE /VERIFY PAGE, THE WAITLIST FORM AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: OKX EUROPE PUBLIC FEED · DECISIONS: DETERMINISTIC ENGINE — CURRENT BUILD LABEL IN THE TOPBAR (v6.x HAS NO LLM IN THE DECISION PATH) · DESK COPY: LLM OBSERVER ONLY, NEVER A DECISION INPUT · TRACK RECORD: DAILY SIGNED SNAPSHOTS, CHAIN ANCHORED ON GITHUB → /VERIFY<span class="cursor">█</span></div>
 
 <div id="modal-root"></div>
 
+<script>
+(function(){
+  var f=document.getElementById('wl-form'),s=document.getElementById('wl-status');
+  if(!f)return;
+  f.addEventListener('submit',function(ev){ev.preventDefault();
+    var e=document.getElementById('wl-email').value.trim();
+    if(!e)return;
+    s.textContent='…';
+    fetch('/api/waitlist',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({email:e})})
+    .then(function(r){if(r.ok){s.textContent='✓ ON THE LIST';f.style.display='none';}
+      else{s.textContent='✗ TRY AGAIN ('+r.status+')';}})
+    .catch(function(){s.textContent='✗ NETWORK';});
+  });
+})();
+</script>
 <script src="data.js"></script>
 <script src="app.js"></script>
 </body>
