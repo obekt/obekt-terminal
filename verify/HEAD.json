@@ -1,0 +1,7 @@
+{
+ "head_sha256": "390a9cf1bbb81efb93c464360ceac5ad66e8e352b8db70313d0cb7764376fcbc",
+ "note": "anchor of https://trader.obekt.com/chain.jsonl \u2014 verify.py checks the whole chain",
+ "seq": 1,
+ "sig": "agEFR59wWhvJAhgDb0HEXZlBlnaZCVo9BsMpLRUt3LRPHMhw9mbGt2l79D7DafNHbVhgw9bpL3+PuPDO2siIDA==",
+ "ts": "2026-11-10T06:38:13.277295+00:00"
+}
