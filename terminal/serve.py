@@ -86,6 +86,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        # /verify is the canonical proof page URL (verify.html on disk)
+        if self.path.split("?")[0] in ("/verify", "/verify/"):
+            self.path = "/verify.html"
         # inject absolute OG URLs for index when PUBLIC_BASE is set
         if PUBLIC_BASE and self.path.split("?")[0] in ("/", "/index.html"):
             try:
