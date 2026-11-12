@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OKX Europe X-Perps two-way scalper (v4.0) — LONG and SHORT via MiFID-regulated
+"""OKX Europe X-Perps two-way LLM scalper (v7.0-halogen) — LONG and SHORT via MiFID-regulated
 USD-margined expiry perps. Companion to okx_jev.py (spot, long-only, EUR): imports
 its plumbing (api signing, ticker, candles, jev client, round_step, balances) but
 runs fully isolated state:
@@ -23,8 +23,27 @@ short_<k>, no_trade}. Direction-specific noul must clear NOUL_BAR.
 
 Modes: status | decide | manage | cycle   (+ --dry-run: full decision path,
 zero order placement — logs perp_dry_open instead of trading).
+
+v7.0-halogen (2026-11-12, OPERATOR DIRECTIVE: "get the trading back to using
+halogen-qwen3.8-flash-next"): the LLM decision path is RESTORED (retired 10-25
+at the TypeSafe Jev kill-gate) with the decision model swapped to our OWN
+halogen-qwen3.8-flash-next, served self-hosted via https://chat.obekt.com/v1
+(LiteLLM -> the fedora ROCm box). halogen_decide() reproduces the TypeSafe
+typed-decision contract (best_action choice+confidence+probabilities, per-pair
+noul) over chat/completions with a strict-JSON system prompt; any transport /
+parse / schema failure FAILS CLOSED to no_trade (perp_llm_err event). The
+v4.9.x gate bars are inherited UNCHANGED and must be re-calibrated on halogen's
+own decision-metric distribution after ~30 fresh calls (v4.8 rule). Sizing:
+all-in capital across MAX_OPEN slots at PERP_LEV=2 isolated — per-leg notional
+= eq*0.98*lev/MAX_OPEN (~$60 at eq $124, ~25% equity margin/leg; operator
+standing directives "trade with all available funds" + "go all in" 10-30).
+Per-trade risk is the bracket SL (0.35-0.80%): worst 4-stop day ~1.6% equity;
+-8% daily breaker remains the software backstop. Replaces the deterministic
+v6.0-fade book (okx_mom.py, timer disabled — kept for the record).
+KILL-GATE v7.0 (pre-registered 11-12): 30 closed trades OR 12 days (~11-24),
+whichever FIRST, live realized net <= 0 -> close/replace (pre-authorized).
 """
-import json, os, sys, time, datetime, decimal
+import json, os, sys, time, datetime, decimal, urllib.request
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -34,9 +53,9 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v6.0-fade"  # v6.0 (10-30): 48h mean-reversion fade replaces v5.2-mom —
-# live momentum verdict: -0.63 realized/63 closes, 39 SL fills, l30 backtest flipped
-# negative; fade grid positive in EVERY window (see okx_mom.py docstring for the table).
+ENGINE_VERSION = "v7.0-halogen"  # v7.0 (11-12): operator directive — LLM decisions back,
+# model = self-hosted halogen-qwen3.8-flash-next via chat.obekt.com. Replaces both the
+# deterministic v6.0-fade book and the retired TypeSafe jev-latest decision API.
 LOG = os.path.join(HERE, "perp_log.jsonl")
 META = os.path.join(HERE, "perp_positions.json")
 RISK = os.path.join(HERE, "perp_risk_state.json")
@@ -157,6 +176,99 @@ def logrec(rec):
     rec["engine"] = "perp"
     with open(LOG, "a") as f:
         f.write(json.dumps(rec, default=str) + "\n")
+
+# ---------------- v7.0 decision model: self-hosted halogen ----------------
+# Operator directive 2026-11-12 ("get the trading back to using
+# halogen-qwen3.8-flash-next"): decisions run on OUR model again. The TypeSafe
+# systemone client (okx_jev.jev) stays in the codebase but is no longer called
+# by this engine. Same typed contract, new transport: OpenAI-compatible
+# chat/completions against the box-local LiteLLM relay (chat.obekt.com).
+LLM_URL = os.environ.get("TERMINAL_LLM_URL", "https://chat.obekt.com/v1/chat/completions")
+LLM_MODEL = os.environ.get("TERMINAL_LLM_MODEL", "halogen-qwen3.8-flash-next")
+
+def _llm_key():
+    k = os.environ.get("TERMINAL_LLM_API_KEY")
+    if k:
+        return k
+    try:
+        for line in open("/root/.env"):
+            if line.startswith("LITELLM_MASTER_KEY="):
+                return line.strip().split("=", 1)[1]
+    except OSError:
+        pass
+    p = os.path.expanduser("~/.config/litellm/credentials.json")
+    if os.path.exists(p):
+        return json.load(open(p)).get("api_key")
+    raise RuntimeError("no LLM key: set TERMINAL_LLM_API_KEY or provide /root/.env LITELLM_MASTER_KEY")
+
+_LLM_SYS = ("You are the decision engine of an autonomous crypto trading system. You receive a JSON market "
+            "state and a set of questions. Answer EVERY question. Respond with ONLY one JSON object, no prose, "
+            "no markdown fences, matching exactly this schema: "
+            '{"answers": {"best_action": {"choice": "<one of the criteria keys>", "confidence": <float 0..1>, '
+            '"probabilities": {"<criteria key>": <float 0..1>, ...}}, "<noul question key>": {"noul": <float 0..1>}, ...}}. '
+            "Rules: probabilities covers EVERY criteria key and sums to 1.0; confidence is your certainty in the "
+            "chosen action; each noul is the probability the stated price event happens within 45 minutes. "
+            "Be calibrated and honest: on a genuinely quiet tape no_trade is the correct answer. Never invent data.")
+
+def halogen_decide(state, questions, timeout=90):
+    """TypeSafe-compatible typed decisions from halogen. FAILS CLOSED: any
+    transport/parse/schema error logs perp_llm_err and returns a no_trade
+    answer, so a model outage can never open a position."""
+    crit = (questions.get("best_action") or {}).get("criteria") or {}
+    def fail_closed(why):
+        logrec({"event": "perp_llm_err", "model": LLM_MODEL, "err": str(why)[:200]})
+        ans = {"best_action": {"choice": "no_trade", "confidence": 0.0,
+                               "probabilities": {"no_trade": 1.0}}}
+        for q, spec in questions.items():
+            if q != "best_action" and spec.get("type") == "noul":
+                ans[q] = {"noul": 0.0}
+        return {"answers": ans, "usage": {}, "model": LLM_MODEL}
+    try:
+        user = json.dumps({"state": state, "questions": questions})
+        body = {"model": LLM_MODEL,
+                "messages": [{"role": "system", "content": _LLM_SYS},
+                             {"role": "user", "content": user}],
+                "temperature": 0.2, "max_tokens": 2000,
+                "metadata": {"tags": ["obekt-perp-decision"]}}
+        req = urllib.request.Request(LLM_URL, data=json.dumps(body).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + _llm_key()})
+        t0 = time.time()
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode())
+        txt = (d["choices"][0]["message"]["content"] or "").strip()
+        if txt.startswith("```"):
+            txt = txt.strip("`")
+            if txt.lower().startswith("json"):
+                txt = txt[4:]
+        j = json.loads(txt)
+        a = j["answers"]
+        ba = a["best_action"]
+        choice = ba.get("choice")
+        if choice not in crit:
+            return fail_closed("choice not in criteria: %r" % choice)
+        probs = {k: float(v) for k, v in (ba.get("probabilities") or {}).items() if k in crit}
+        s = sum(probs.values())
+        if s > 0:
+            probs = {k: round(v / s, 4) for k, v in probs.items()}
+        conf = max(0.0, min(1.0, float(ba.get("confidence") or 0)))
+        out = {"best_action": {"choice": choice, "confidence": conf, "probabilities": probs}}
+        for q, spec in questions.items():
+            if q != "best_action" and spec.get("type") == "noul":
+                nv = (a.get(q) or {}).get("noul")
+                out[q] = {"noul": max(0.0, min(1.0, float(nv))) if nv is not None else None}
+        usage = d.get("usage") or {}
+        logrec({"event": "perp_llm", "model": LLM_MODEL,
+                "latency_s": round(time.time() - t0, 1),
+                "input_tokens": usage.get("prompt_tokens"),
+                "output_tokens": usage.get("completion_tokens")})
+        return {"answers": out,
+                "usage": {"input_tokens": usage.get("prompt_tokens"),
+                          "output_tokens": usage.get("completion_tokens")},
+                "model": LLM_MODEL}
+    except Exception as e:
+        return fail_closed(e)
+
 
 def halted():
     return os.path.exists(J.STOP) or os.path.exists(STOP_PERP)
@@ -788,12 +900,14 @@ def decide():
         return rec
 
     eq = usdc_equity()
-    budget = min(eq * MAX_NOTIONAL_FRAC * float(PERP_LEV), MAX_NOTIONAL_USD)
+    # v7.0: all-in across MAX_OPEN slots — the v6.0-era constants budgeted the
+    # whole equity per pick; with 4 slots that would over-commit margin 4x.
+    budget = min(eq * MAX_NOTIONAL_FRAC * float(PERP_LEV) / MAX_OPEN, MAX_NOTIONAL_USD)
     state = {
         "context": ("Two-way momentum scalping on OKX Europe X-Perps (MiFID-regulated "
-                    "USD-margined expiry perps, isolated margin, 1x). You may go LONG or "
+                    "USD-margined expiry perps, isolated margin, 2x). You may go LONG or "
                     "SHORT each pair. Fees: maker 0.02% / taker 0.05% — round trip ~0.07-0.11%, "
-                    "much cheaper than spot. Entry is maker-only; exits are market on trigger. "
+                    "much cheaper than spot. Entry is maker-first with a one-shot IOC chase; exits are market on trigger. "
                     "Per pair: spread_pct, chg_30min_pct, volatility_30min_pct, "
                     "range30_pos_pct (0=30m low, 100=30m high), bars_up_of_6, chg_4h_pct, "
                     "chg_7d_pct, funding_bps (positive = longs pay shorts; heavily positive "
@@ -854,7 +968,7 @@ def decide():
     questions["best_action"] = {"type": "choice",
         "instructions": "Which single action maximizes expected profit net of costs over the next 30-90 minutes",
         "criteria": crit}
-    ans = J.jev(state, questions)
+    ans = halogen_decide(state, questions)
     a = ans["answers"]
     choice = a["best_action"]["choice"]
     conf = a["best_action"].get("confidence", 0)
@@ -885,13 +999,16 @@ def decide():
             "spread_pct": f.get("spread_pct"), "funding_bps": f.get("funding_bps"),
             "bracket": f.get("bracket"),
         })
-    logrec({"event": "perp_jev", "choice": choice, "conf": conf, "margin": margin,
+    logrec({"event": "perp_jev", "model": ans.get("model"),
+            "choice": choice, "conf": conf, "margin": margin,
             "noul": noul, "n_pairs": len(tradeable),
             "chosen_inst": chosen_inst, "chosen_side": chosen_side,
             "probabilities": probs, "pairs": pairs_detail,
             "collateral_usdc": round(eq, 2), "budget_usd": round(budget, 2),
             "input_tokens": usage.get("input_tokens"),
-            "output_tokens": usage.get("output_tokens")})
+            "output_tokens": usage.get("output_tokens"),
+            "macro_upcoming": state.get("macro_events_24h"),
+            "macro_surprises": state.get("macro_released_3h_surprises")})
     rec.update({"choice": choice, "conf": conf, "margin": margin, "noul": noul})
     edge_ok = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
     noul_ok = (noul or 0) >= NOUL_BAR
@@ -911,10 +1028,15 @@ def decide():
     px = f["bid"] if side == "long" else f["ask"]   # maker entry rests at the touch
     ctval = float(ins["ctVal"])
     notional_per_ct = ctval * px
-    contracts = int(budget // notional_per_ct)
-    contracts = max(contracts, int(float(ins.get("minSz") or 1)))
+    # v7.0: SZFIX pattern (10-29 lesson) — int() truncation zero-sized expensive
+    # instruments (lotSz is fractional on XPERPs). Decimal lot steps + minSz floor.
+    lot = float(ins.get("lotSz") or 1)
+    minsz = float(ins.get("minSz") or lot)
+    contracts = rstep(budget / notional_per_ct, lot, down=True)
+    if contracts < minsz:
+        contracts = minsz
     notional = contracts * notional_per_ct
-    if notional > budget * 1.15 or notional > MAX_NOTIONAL_USD * 1.15:
+    if contracts <= 0 or notional > budget * 1.15 or notional > MAX_NOTIONAL_USD * 1.15:
         rec["why"] = f"min contract {notional:.1f}USD exceeds budget {budget:.1f}"
         logrec({"event": "perp_no_trade", "inst": inst, "why": rec["why"]})
         return rec

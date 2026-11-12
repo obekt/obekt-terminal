@@ -11,7 +11,7 @@ out["hour_bucket"] = int(now // 3600) % 24  # age proxy for re-fire on persisten
 
 try:
     out["timer_active"] = subprocess.run(
-        ["systemctl", "is-active", "obekt-mom.timer"],
+        ["systemctl", "is-active", "obekt-perp.timer"],
         capture_output=True, text=True, timeout=15).stdout.strip()
 except Exception:
     out["timer_active"] = "err"

@@ -96,7 +96,7 @@ def _live_params():
                 "MIN_TARGET_PCT": 0.6, "MAX_TARGET_PCT": 2.0, "SL_COST_MULT": 1.75,
                 "TIME_STOP_MIN": 30, "STALE_EXIT_MIN": 60, "COOLDOWN_MIN": 20,
                 "WIN_COOLDOWN_MIN": 10, "DAILY_LOSS_PCT": 8.0, "MAX_NOTIONAL_FRAC": 0.98,
-                "PERP_LEV": "1", "MIN_VOL30_PCT": 0.35, "MAX_JEV_PAIRS": 4}
+                "PERP_LEV": "1", "MIN_VOL30_PCT": 0.35, "MAX_JEV_PAIRS": 4, "MAX_OPEN": 4}
     try:
         src = open(os.path.join(BASE, fname)).read(40960)
     except Exception:
@@ -297,7 +297,7 @@ ENGINE = {
     "venue": "OKX EUROPE (EEA) · X-PERPS",
     "cycle_s": 300,
     "quote": "USDC",
-    "decision_model": "jev-latest (TypeSafe System One)",
+    "decision_model": "halogen-qwen3.8-flash-next (self-hosted)",
     "desk_model": LLM_MODEL,
     "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
     "spot_book": {
@@ -760,6 +760,9 @@ def build_funnel(events, universe):
          "jev": 0, "buy_picks": 0, "open": 0, "cooldown_skip": 0}
     tok_in = tok_out = state_chars = 0
     tok_today = 0
+    # v7.0: split legacy TypeSafe spend ($0.04/M) from self-hosted halogen ($0)
+    tok_in_legacy = tok_today_legacy = 0
+    legacy_calls = halogen_calls = halogen_calls_today = 0
     sum_n_eur = sum_n_cand = sum_jev_pairs = 0
     last_scan_n = None      # most recent per-cycle universe size (see below)
     today = _now().strftime("%Y-%m-%d")
@@ -787,6 +790,15 @@ def build_funnel(events, universe):
             u = e.get("usage") or {}
             tok_in += u.get("input_tokens") or 0
             tok_out += u.get("output_tokens") or 0
+            if e.get("model"):   # v7.0+ halogen calls carry a model field
+                halogen_calls += 1
+                if (ts or "").startswith(today):
+                    halogen_calls_today += 1
+            else:                # legacy TypeSafe jev-latest era
+                legacy_calls += 1
+                tok_in_legacy += u.get("input_tokens") or 0
+                if (ts or "").startswith(today):
+                    tok_today_legacy += u.get("input_tokens") or 0
             pstat = e.get("prompt_stats") or {}
             state_chars += pstat.get("state_chars") or 0
             sum_jev_pairs += pstat.get("n_pairs") or len((e.get("state") or {}).get("pairs") or {})
@@ -830,9 +842,13 @@ def build_funnel(events, universe):
         "tok_input_today": tok_today,
         "tok_input_all": tok_in,
         "tok_output_all": tok_out,
-        # Jev pricing $0.04/M input
-        "usd_today": round(tok_today * 0.04 / 1e6, 6),
-        "usd_all": round(tok_in * 0.04 / 1e6, 4),
+        # Legacy TypeSafe Jev pricing $0.04/M input — halogen is self-hosted
+        # ($0 marginal), so spend counts ONLY pre-v7.0 calls (no model field).
+        "usd_today": round(tok_today_legacy * 0.04 / 1e6, 6),
+        "usd_all": round(tok_in_legacy * 0.04 / 1e6, 4),
+        "legacy_calls_all": legacy_calls,
+        "halogen_calls_all": halogen_calls,
+        "halogen_calls_today": halogen_calls_today,
         "uptime_h": uptime_h,
         "first_ts": first_ts,
     }
@@ -1467,9 +1483,13 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         "signal was retired 2026-10-25 (no edge at its own kill-gate review).\n\n"
     ) if _is_mom else (
         "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
-        "then the Jev System-One model returns TYPED decisions (probabilities + confidence, no free text, "
-        "scored in BOTH directions per contract); "
-        "exits are server-side OCO + trailing stops. News/sentiment/macro are injected into Jev's state.\n\n"
+        "then our SELF-HOSTED halogen-qwen3.8-flash-next model (served on our own hardware via "
+        "chat.obekt.com) returns TYPED JSON decisions (probabilities + confidence, schema-checked, "
+        "scored in BOTH directions per contract; invalid output fails closed to no_trade); "
+        "exits are server-side OCO + trailing stops. News/macro are injected into the model's state. "
+        "Operator directive 2026-11-12 restored LLM decisions on our own model, replacing the "
+        "deterministic v6 fade book; the earlier TypeSafe Jev signal was retired 2026-10-25 "
+        "(no edge at its own kill-gate review).\n\n"
     )
     perp_open = [{
         "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),
@@ -1877,16 +1897,23 @@ def build():
         jev_latest = None
 
     news = catalyst.get("catalysts", [])
-    # MACRO: only the retired spot engine injected econ-calendar events into the
-    # model state; the live X-Perp engine does not. Showing spot's last frozen
-    # macro snapshot under a live-looking heading would imply context the live
-    # book never sees, so publish the source explicitly and let the UI say so.
+    # MACRO: source-honest publishing. The deterministic fade book did not
+    # inject econ-calendar events; the v7.0 halogen LLM book DOES (snapshotted
+    # on each perp_jev event). Never show spot's frozen macro as live context.
     macro = {"source": None, "upcoming": [], "surprises": []}
-    if SPOT_BOOK_RETIRED:
+    if SPOT_BOOK_RETIRED and (perp or {}).get("strategy") == "momentum":
         macro["source"] = "not-injected-into-live-book"
-        macro["note"] = ("The live X-Perp engine injects funding + multi-timeframe momentum only. "
+        macro["note"] = ("The deterministic fade engine decides on 48h returns alone. "
                          "Econ-calendar / macro events were injected by the retired spot engine, "
                          "so there is no live macro context to show.")
+    elif SPOT_BOOK_RETIRED:
+        # v7.0-halogen: the LLM decision state carries the econ calendar again;
+        # the engine snapshots it on every perp_jev event (normalized to "jev").
+        _mj = next((e for e in reversed(live_events) if e.get("event") == "jev"), None)
+        macro = {"source": "live-model-state",
+                 "upcoming": (_mj or {}).get("macro_upcoming") or [],
+                 "surprises": (_mj or {}).get("macro_surprises") or [],
+                 "note": "Injected into every halogen decision state (econ calendar + surprise prints)."}
     elif jev_latest:
         st = None
         for e in reversed(events):

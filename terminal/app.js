@@ -304,7 +304,7 @@
     // carries the live X-Perp decision (already rendered in the X-Perps panel).
     const retired = spotRetired(D);
     const j = retired ? ((D.retired_spot || {}).jev_latest) : D.jev_latest;
-    if (!j) { $("jev-body").textContent = retired ? "NO SPOT CALL ON RECORD" : "NO JEV CALL LOGGED YET"; return; }
+    if (!j) { $("jev-body").textContent = retired ? "NO SPOT CALL ON RECORD" : "NO MODEL CALL LOGGED YET"; return; }
     const probs = j.probabilities || {};
     let bars = "";
     Object.keys(probs).sort((a, b) => probs[b] - probs[a]).forEach(k => {
@@ -382,7 +382,7 @@
         out.push(gateRow("CONF FLOOR ≥ " + fmt(c.conf_floor, 2) + (usePerp ? " (perp burn-in)" : " (hard, v3.8+)"), cfOk, "actual " + fmt(confV) + " · conjunctive — OR-path still needs this", na));
       }
       out.push(gateRow(usePerp ? "NOUL MOVE-PROB ≥ " + fmt(c.noul_bar, 2) : "NOUL RISE-PROB ≥ " + fmt(c.noul_bar, 2), c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(noulV), na));
-      out.push(gateRow("FINAL ENGINE VERDICT", c.fire, c.fire ? "TRADE AUTHORIZED" : (na ? "JEV: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
+      out.push(gateRow("FINAL ENGINE VERDICT", c.fire, c.fire ? "TRADE AUTHORIZED" : (na ? "MODEL: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
     }
     out.push(gateRow(usePerp ? "DEPTH FLOOR (top5 book ≥ 3× notional)" : "DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
     out.push(gateRow("DAILY LOSS BREAKER −8%", !r.breaked && !((D.perp || {}).breaked),
@@ -411,7 +411,7 @@
       }
     });
     out.push(gateRow("PAIR COOLDOWNS (win " + winMin + "m / loss " + lossMin + "m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
-    out.push(gateRow("MOMENTUM GATES PRE-JEV", true, "chg30 · bars_up · range30 · vol30 · taker share"));
+    out.push(gateRow("MOMENTUM GATES PRE-MODEL", true, "chg30 · bars_up · range30 · vol30 · taker share"));
     out.push(gateRow("SERVER-SIDE OCO TP/SL + HWM TRAIL", true, "exits execute on-exchange, even offline"));
     $("gates-body").innerHTML = out.join("");
   }
@@ -467,7 +467,7 @@
     const rows = [
       [f.pair_scans_all, "PAIR LIQUIDITY SCANS", "every cycle sweeps " + scanN + " " + scanLbl + (perps ? " · account-scoped instruments feed" : " · keyless public feed")],
       [f.candidates_all, "PASSED DEEP FILTERS", "vol ≥" + sym + volK + "k · spread ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · range ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · depth ≥" + sym + depthK + "k"],
-      [f.jev_pair_evals_all, "SETUPS EVALUATED BY JEV", "only momentum-gate survivors reach the model (" + (f.jev_calls || 0) + " calls)"],
+      [f.jev_pair_evals_all, "SETUPS EVALUATED BY THE MODEL", "only momentum-gate survivors reach the model (" + (f.jev_calls || 0) + " calls)"],
       [f.buy_picks, perps ? "DIRECTIONAL PICKS BY THE MODEL" : "BUY VOTES BY THE MODEL", perps ? "long or short — typed probabilities; the engine bar still applies" : "typed probabilities — the engine bar still applies"],
       [f.opens, "POSITIONS OPENED", "margin/noul bar + live book re-check cleared"],
     ];
@@ -483,7 +483,7 @@
       '<div class="dim" style="margin-top:6px;border-top:1px dotted #241f10;padding-top:5px">' +
       rej.toLocaleString() + " GATE REJECTS · " + (f.depth_rejects || 0) + " DEPTH REJECTS · " + (f.cooldown_skips || 0) +
       " COOLDOWN BLOCKS<br>SAYING NO IS THE JOB: " + (f.opens && f.jev_calls ? Math.round(100 * f.opens / f.jev_calls) : "—") +
-      "% OF MODEL CALLS BECOME TRADES<br>JEV SPEND: $" + fmt(f.usd_all, 2) + " ALL TIME · $" + fmt(f.usd_today, 4) + " TODAY @$0.04/M TOK</div>";
+      "% OF MODEL CALLS BECOME TRADES<br>LEGACY JEV SPEND: $" + fmt(f.usd_all, 2) + " (TYPE SAFE ERA, RETIRED 10-25) · HALOGEN: " + (f.halogen_calls_all || 0) + " CALLS SELF-HOSTED, $0 MARGINAL</div>";
   }
 
   /* ---------- decision scatter ---------- */
@@ -602,7 +602,7 @@
       '<div class="perp-h"' + (retired ? ' style="margin-top:10px"' : '') + '>RETIRED BOOK · SPOT EUR (LONG-ONLY) — no longer scanned for trading</div>' +
       '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(u.scanned_iso)) + ' UTC · ' +
       (u.n_eur_pairs || "?") + " EUR PAIRS → LIQUIDITY+RANGE+DEPTH FILTER → " + (u.n_candidates || "?") +
-      ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO JEV · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
+      ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO THE MODEL · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
       "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>";
     $("universe-body").innerHTML = retired
       ? (perpUniverseHtml(D) + spotHtml)
@@ -679,7 +679,7 @@
         "<td class='am'>" + fmt(b.trail_arm_pct, 2) + "/" + fmt(b.trail_giveback_pct, 2) + "</td>" +
         "<td>" + fmt(p.age_min, 0) + "m</td>" +
         "<td>" + (p.algo_ok ? "<span class='pos'>SERVER OCO</span>" : "<span class='am'>POLL STOP</span>") + "</td></tr>" +
-        "<tr><td colspan='12' style='text-align:left;padding-left:12px'><span class='dim'>JEV ENTRY: conf " + fmt(p.jev_conf, 2) +
+        "<tr><td colspan='12' style='text-align:left;padding-left:12px'><span class='dim'>MODEL ENTRY: conf " + fmt(p.jev_conf, 2) +
         " · noul " + fmt(p.jev_noul, 2) + " · " + esc(p.entry_type || "-") + " · opened " + esc(mmdd_hhmm(p.opened_ts)) + " UTC · qty " + fmt(p.qty, p.qty > 100 ? 0 : 4) + "</span>" + sp + "</td></tr>";
     }).join("");
     $("pos-body").innerHTML = "<table><tr><th>PAIR</th><th>STAKE</th><th>ENTRY</th><th>LAST</th><th>UPNL%</th><th>UPNL €</th><th>HWM</th><th>TP%</th><th>SL%</th><th>TRAIL A/GB</th><th>AGE</th><th>PROTECTION</th></tr>" + rows + "</table>";
@@ -716,7 +716,7 @@
     if (pairs.length) {
       const dirLbl = (pj.chosen_side === "short") ? "▼ SHORT" : (pj.chosen_side === "long" ? "▲ LONG" : "— FLAT");
       const dirCls = (pj.chosen_side === "short") ? "short-tag" : (pj.chosen_side === "long" ? "long-tag" : "dim");
-      html += '<div class="perp-sec"><div class="perp-h">JEV TWO-WAY CALL · ' + esc(mmdd_hhmm(pj.ts)) + ' UTC</div>';
+      html += '<div class="perp-sec"><div class="perp-h">MODEL TWO-WAY CALL · ' + esc(mmdd_hhmm(pj.ts)) + ' UTC</div>';
       html += '<div class="perp-decision">DECISION <span class="' + dirCls + '" style="font-size:13px">' + dirLbl + '</span> ' +
         esc((pj.chosen_inst || "").replace("-USD_UM_XPERP", " X-PERP").replace(/-\d{6}$/, "")) +
         ' <span class="dim">· conf ' + fmt(pj.conf) + ' · margin ' + fmt(pj.margin) + ' · noul ' + fmt(pj.noul) +
@@ -798,14 +798,16 @@
       const txt = m ? m[2] : n;
       return '<div class="news-item"><span class="src">[' + esc(src.toUpperCase()) + "]</span>" + esc(txt) + "</div>";
     }).join("");
-    // HONESTY: these feeds were written by the retired spot engine and are what IT
-    // put into its prompts. The live X-Perp engine injects funding + momentum only,
-    // so claiming this "rides with every Jev call" would describe a system that no
-    // longer exists. Show the source and the age instead.
+    // HONESTY: say exactly what the LIVE engine injects. v7.0 halogen LLM book:
+    // RSS catalysts ride with every decision (30-min guard). Deterministic fade
+    // book: observer-only. Retired spot: its own frozen prompts.
     const staleMin = ageMin(D.news_updated);
-    const feedNote = spotRetired(D)
-      ? "OBSERVER CONTEXT — NOT INJECTED INTO THE LIVE BOOK. The live X-Perp engine decides on funding + multi-timeframe momentum; RSS catalysts were prompt context for the retired spot engine."
-      : "RIDES WITH EVERY JEV CALL — 30-MIN GUARD";
+    const isMom = ((D.perp || {}).strategy) === "momentum";
+    const feedNote = !spotRetired(D)
+      ? "RIDES WITH EVERY MODEL CALL — 30-MIN GUARD"
+      : isMom
+        ? "OBSERVER CONTEXT — NOT INJECTED INTO THE LIVE BOOK. The deterministic fade engine decides on 48h returns alone."
+        : "INJECTED INTO THE LIVE MODEL STATE — RSS catalysts refresh on a 30-min guard and ride with every halogen decision.";
     $("news-age").textContent = "INGESTED " + esc(mmdd_hhmm(D.news_updated)) + " UTC" +
       (staleMin !== null ? " · " + staleMin + "M AGO" : "") +
       (staleMin !== null && staleMin > 45 ? " · ⚠ FEED STALE" : "");
@@ -844,7 +846,7 @@
       fgBar(s.fear_greed) +
       '<div class="dim" style="margin:4px 0">BTC PERP FUNDING: <span class="am">' + fmt(s.funding_bps, 1) + ' BPS</span> · SOURCES: ALTERNATIVE.ME + COINGECKO (KEYLESS) · ' + esc(mmdd_hhmm(s.updated)) + " UTC" +
       (stale !== null ? " · " + stale + "M AGO" : "") + (stale !== null && stale > 45 ? ' · <span class="neg">⚠ STALE</span>' : "") + "</div>" +
-      (spotRetired(D) ? '<div class="dim" style="margin-bottom:4px">OBSERVER CONTEXT ONLY — the coin table below is the retired spot engine\'s EUR universe. The live X-Perp book injects per-contract funding + momentum, not these polls.</div>' : "") +
+      (spotRetired(D) ? '<div class="dim" style="margin-bottom:4px">OBSERVER CONTEXT ONLY — the coin table below is the retired spot engine\'s EUR universe. The live X-Perp book injects per-contract funding + multi-timeframe features, not these polls.</div>' : "") +
       "<table><tr><th>PAIR</th><th>24H</th><th>BULL VOTE</th><th>TREND</th><th>WATCHLISTS</th><th>OFF ATH</th><th>MCAP#</th></tr>" + rows + "</table>" +
       '<div class="dim" style="margin-top:5px">GLOBAL ATTENTION: ' + trend + "</div>";
   }
@@ -922,7 +924,7 @@
       "<td class='cy' style='font-size:9px'>REPLAY ▸</td></tr>";
     }).join("");
     $("trades-body").innerHTML = "<table><tr><th>CLOSED UTC</th><th>PAIR</th><th>" + (twoWay ? "NOTIONAL" : "STAKE") + "</th><th>MOVE</th><th>NET " + sym + "</th><th>FEES</th><th>HELD</th><th>EXIT</th><th></th></tr>" + rows +
-      "</table><div class='dim' style='margin-top:3px;font-size:9.5px'>▸ CLICK ANY ROW — FULL DECISION REPLAY: THE EXACT STATE JEV SAW, ITS VOTE, THE GATES, EVERY EVENT ENTRY→EXIT, PLUS AN LLM POST-MORTEM · <span style='color:var(--cyan)'>◈LLM</span> = DEBRIEF READY (HOVER)</div>";
+      "</table><div class='dim' style='margin-top:3px;font-size:9.5px'>▸ CLICK ANY ROW — FULL DECISION REPLAY: THE EXACT STATE THE MODEL SAW, ITS VOTE, THE GATES, EVERY EVENT ENTRY→EXIT, PLUS AN LLM POST-MORTEM · <span style='color:var(--cyan)'>◈LLM</span> = DEBRIEF READY (HOVER)</div>";
     document.querySelectorAll(".trade-row").forEach(tr => {
       tr.onclick = () => openDossier(tr.getAttribute("data-tid"));
     });
@@ -958,13 +960,13 @@
       '<div class="sc-kind">' + esc(kind) + '</div>' +
       '<div class="sc-lines">' + lines.map(l => '<div>▸ ' + esc(l) + "</div>").join("") + "</div></div>";
     $("stack-body").innerHTML =
-      card("DECISION ENGINE", "Jev System-One (jev-latest)", "TYPED / SCHEMA-ENFORCED · NOT TEXT", [
+      card("DECISION ENGINE", "halogen-qwen3.8-flash-next", "SELF-HOSTED · TYPED JSON · SCHEMA-CHECKED", [
         spotRetired(D)
           ? "Returns probabilities, not prose — p(long) AND p(short) per contract, rise/fall-prob, confidence"
           : "Returns probabilities, not prose — p(buy) per pair, noul rise-prob, confidence",
-        "Zero parsing, zero hallucinated numbers; the engine reads a typed struct",
+        "Schema-checked JSON; invalid or failed output fails closed to no_trade",
         (f.jev_calls || 0) + " calls · avg " + (f.avg_input_tok || "?") + " tok in / " + (f.avg_output_tok || "?") + " out",
-        "$0.04 per 1M input tokens — decisions cost fractions of a cent",
+        "Runs on our own hardware via chat.obekt.com — $0 marginal per decision",
       ], "#29c9eb") +
       card("DESK + POST-MORTEM LLM", dn.model || "halogen-qwen3.8-flash-next", "GENERATIVE · LOCAL RELAY · CACHE-GATED", [
         "Writes the desk note you read at the top + one-line trade post-mortems",
@@ -972,7 +974,7 @@
         "Hash-cached, ≥5-min rate limit, graceful fallback if the relay drops",
         "Runs on YOUR relay — a local model or a cheap hosted endpoint, not a big-cloud API",
       ], "#00e04b") +
-      '<div class="dim" style="margin-top:6px;font-size:10px">TWO MODELS, TWO JOBS: A CHEAP TYPED MODEL <b style="color:var(--cyan)">DECIDES</b> (auditable, no free text); A LOCAL GENERATIVE MODEL <b style="color:var(--green)">EXPLAINS</b>. The decision path never depends on prose parsing — that is the whole point of the architecture.</div>';
+      '<div class="dim" style="margin-top:6px;font-size:10px">ONE SELF-HOSTED MODEL, TWO JOBS: HALOGEN <b style="color:var(--cyan)">DECIDES</b> (typed JSON, schema-checked, auditable) AND <b style="color:var(--green)">EXPLAINS</b> (desk note + post-mortems). No external decision API — the whole loop runs on our own hardware.</div>';
   }
 
   /* ---------- prompt / cost optimization ---------- */
@@ -1019,7 +1021,8 @@
     const sym = liveCcy(D) === "USD" ? "$" : "€";
     const opens = f.opens || 0, calls = f.jev_calls || 0;
     const usdAll = f.usd_all || 0;
-    const perDecision = calls ? usdAll / calls : 0;
+    const legacyCalls = f.legacy_calls_all || 0;
+    const perDecision = legacyCalls ? usdAll / legacyCalls : 0;
     const perTrade = opens ? usdAll / opens : 0;
     const netAll = s.net_all_eur || 0;
     const fees = s.fees_all_eur || 0;
@@ -1028,15 +1031,15 @@
       (sub ? '<div class="eco-s">' + esc(sub) + "</div>" : "") + "</div>";
     $("costlive-body").innerHTML =
       '<div class="eco-grid">' +
-      big("COST / JEV DECISION", "$" + perDecision.toFixed(6), (calls || 0) + " calls all-time", "g") +
-      big("COST / TRADE OPENED", "$" + perTrade.toFixed(4), (opens || 0) + " opens all-time", "g") +
-      big("TOTAL MODEL SPEND", "$" + usdAll.toFixed(2), ((f.tok_input_all || 0) / 1e3).toFixed(0) + "k tok in", "g") +
+      big("LEGACY $ / JEV DECISION", "$" + perDecision.toFixed(6), (legacyCalls || 0) + " TypeSafe-era calls", "g") +
+      big("LEGACY $ / TRADE OPENED", "$" + perTrade.toFixed(4), "legacy spend / " + (opens || 0) + " opens", "g") +
+      big("LEGACY MODEL SPEND", "$" + usdAll.toFixed(2), "TypeSafe era · halogen: $0 marginal", "g") +
       big("EXCHANGE FEES PAID", sym + fees.toFixed(2), "the real cost of scalping", "r") +
       "</div>" +
       '<div class="dim" style="margin-top:7px;font-size:10.5px;line-height:1.5">' +
-      "THE WHOLE GAME IS FEES, NOT INFERENCE. THIS ENGINE HAS SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
-      "</b> ON EVERY JEV DECISION IT EVER MADE, AND <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
-      "</b> ON EXCHANGE FEES. A SCALPER'S EDGE LIVES OR DIES ON THE FEE LINE — WHICH IS WHY THE ENTRY IS MAKER-FIRST AND THE UNIVERSE IS FILTERED FOR TIGHT SPREADS. THE AI IS NEARLY FREE; THE MARKET ACCESS IS NOT.</div>";
+      "THE WHOLE GAME IS FEES, NOT INFERENCE. THE RETIRED TYPE SAFE JEV ERA SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
+      "</b> ON DECISIONS; THE LIVE HALOGEN ENGINE IS SELF-HOSTED AT $0 MARGINAL COST. EXCHANGE FEES: <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
+      "</b>. A SCALPER'S EDGE LIVES OR DIES ON THE FEE LINE — WHICH IS WHY THE ENTRY IS MAKER-FIRST AND THE UNIVERSE IS FILTERED FOR TIGHT SPREADS. THE AI IS FREE; THE MARKET ACCESS IS NOT.</div>";
   }
 
   /* ---------- architecture ---------- */
@@ -1066,14 +1069,14 @@
       ["4", "CONTEXT", perps
         ? "PER-CONTRACT FUNDING RATE · 30M/4H/7D MULTI-TIMEFRAME MOMENTUM · SPREAD + RANGE POSITION · BRACKET GEOMETRY"
         : "RSS HEADLINES (30-MIN GUARD) · FEAR&GREED + STREAK · COMMUNITY POLLS · BTC FUNDING · ECON CALENDAR + SURPRISE PRINTS · 30M/4H/7D MULTI-TIMEFRAME"],
-      ["5", "DECIDE", "JEV SYSTEM-ONE RETURNS TYPED OUTPUT: " + (perps
+      ["5", "DECIDE", "HALOGEN RETURNS TYPED JSON: " + (perps
         ? "P(LONG) AND P(SHORT) PER CONTRACT · RISE- AND FALL-PROBABILITY"
         : "P(BUY) PER PAIR · NOUL RISE-PROBABILITY") + " · CONFIDENCE — SCHEMA-ENFORCED, NO TEXT PARSING, NO HALLUCINATED NUMBERS"],
       ["6", "VETO", "ENGINE BAR: MARGIN ≥" + fmt(p.MARGIN_BAR, 2) + " OR CONF ≥" + fmt(p.CONF_BAR, 2) +
         ", AND CONF ≥" + fmt(p.CONF_FLOOR, 2) + " FLOOR, AND NOUL ≥" + fmt(p.NOUL_BAR, 2) +
         " — THEN LIVE BOOK RE-CHECK: DEPTH ≥3× STAKE, BRACKET REPRICED FROM THE REAL SPREAD"],
-      ["7", "EXECUTE", "MAKER-FIRST ENTRY (POST_ONLY — UNFILLED = NO TRADE, NO CHASE) · " + (perps
-        ? "NOTIONAL = " + Math.round((p.MAX_NOTIONAL_FRAC || 0.98) * 100) + "% OF USDC EQUITY · " + (p.PERP_LEV || 1) + "× ISOLATED"
+      ["7", "EXECUTE", "MAKER-FIRST ENTRY (POST_ONLY 25s → ONE-SHOT IOC CHASE) · " + (perps
+        ? "ALL-IN: " + Math.round((p.MAX_NOTIONAL_FRAC || 0.98) * 100) + "% OF USDC EQUITY × " + (p.PERP_LEV || 1) + "× LEV ACROSS " + (p.MAX_OPEN || 4) + " SLOTS · ISOLATED"
         : "STAKE = ALL FREE EUR / OPEN SLOTS") + " · SERVER-SIDE OCO TP/SL ATTACHED AT FILL"],
       ["8", "MANAGE", "HWM TRAILING STOP RE-ARMED ON-EXCHANGE · TIME-STOP " + (p.TIME_STOP_MIN || 30) + "M LOSING · STALE-EXIT " +
         (p.STALE_EXIT_MIN || 60) + "M · WIN " + (p.WIN_COOLDOWN_MIN || 10) + "M / LOSS " + (p.COOLDOWN_MIN || 20) +
@@ -1087,7 +1090,7 @@
       (f.uptime_h ? Math.round(f.uptime_h) + "H UNATTENDED · " : "") +
       (f.cycles || 0).toLocaleString() + " CYCLES RUN · " + (f.jev_calls || 0) + " MODEL CALLS · " +
       (f.gate_rejects || 0).toLocaleString() + " SETUPS REJECTED BY CODE · $" + fmt(f.usd_all, 2) +
-      " TOTAL DECISION COST · EVERY NUMBER ON THIS PAGE CAME FROM THE RAW ENGINE LOG — NOT A BACKTEST, NOT A SIMULATION.</div>";
+      " LEGACY DECISION COST (HALOGEN: $0) · EVERY NUMBER ON THIS PAGE CAME FROM THE RAW ENGINE LOG — NOT A BACKTEST, NOT A SIMULATION.</div>";
   }
 
   /* ---------- tape with new-row flash + session tracking ---------- */
@@ -1126,7 +1129,7 @@
       '<span class="sess-live"><span class="dot"></span>WATCHING LIVE</span>' +
       '<span class="sess-cell">YOU ARRIVED <b>' + mins + '</b> MIN AGO — SINCE THEN THE ENGINE RAN:</span>' +
       '<span class="sess-cell">' + bump(SESS.events, "") + " NEW EVENTS</span>" +
-      '<span class="sess-cell">' + bump(SESS.jevs, "") + " JEV CALLS</span>" +
+      '<span class="sess-cell">' + bump(SESS.jevs, "") + " MODEL CALLS</span>" +
       '<span class="sess-cell">' + bump(SESS.rejects, "") + " GATE REJECTS</span>" +
       '<span class="sess-cell">' + bump(SESS.opens, "g") + " ENTRIES</span>" +
       '<span class="sess-cell">' + bump(SESS.closes, "r") + " EXITS</span>" +
@@ -1355,7 +1358,7 @@
       if (!m) return String(k).toUpperCase();
       return (m[1] === "short" ? "▼ SHORT " : "▲ LONG ") + m[2].toUpperCase();
     };
-    const sec1 = '<div class="msec"><h3>1 · THE MODEL VOTE — WHAT JEV RETURNED (TYPED JSON, NOT TEXT)</h3>' +
+    const sec1 = '<div class="msec"><h3>1 · THE MODEL VOTE — WHAT THE MODEL RETURNED (TYPED JSON, NOT TEXT)</h3>' +
       '<div class="dim" style="margin-bottom:5px">CALL AT ' + esc(mmdd_hhmm(dec.ts)) + ' UTC · SCHEMA-ENFORCED OUTPUT — THE ENGINE NEVER PARSES PROSE</div>' +
       Object.keys(probs).sort((a, x) => probs[x] - probs[a]).map(k =>
         pbar(probLabel(k), probs[k], k === dec.choice && dec.choice !== "no_trade")).join("") +
@@ -1380,7 +1383,7 @@
         "<td>" + fmt(p.volatility_30min_pct, 2) + "%</td>" +
         "<td>" + fmt(p.spread_pct, 3) + "%</td></tr>";
     }).join("");
-    const sec2 = '<div class="msec"><h3>2 · THE MARKET STATE JEV SAW — EXACT PROMPT INPUT</h3>' +
+    const sec2 = '<div class="msec"><h3>2 · THE MARKET STATE THE MODEL SAW — EXACT PROMPT INPUT</h3>' +
       "<table class='pairmini'><tr><th>PAIR</th><th>BID</th><th>30M</th><th>4H</th><th>7D</th><th>R30 POS</th><th>GREEN BARS</th><th>VOL30</th><th>SPREAD</th></tr>" + pairRows + "</table>" +
       '<div class="mgrid" style="margin-top:8px">' +
       '<div class="mbox"><div class="mk">' + (ccy === "USD" ? "USDC COLLATERAL" : "CASH FREE") + '</div><div class="mv">' + mon(dec.cash_eur) + "</div></div>" +
