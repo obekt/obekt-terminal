@@ -674,3 +674,8 @@ USD-margined expiry-perps (OKX Europe Markets Ltd, Malta), long AND short,
 - `okx news` 404 on API-key auth — OAuth-only module, not a bug.
 - Cron output runs LOCAL tz, trading logic UTC — `date -u` before blaming time rules.
 - CLI prefers API key over OAuth always; a broken key profile blocks OAuth login.
+
+## Changelog (sanitized public mirror)
+- v9.0-jev (2026-11-14): operator-directed — TypeSafe Jev decisions restored (self-hosted halogen relegated to desk text), order-book imbalance added to the decision data, 5x aggressive scalp geometry retained. Jev had been retired for no edge; re-authorized by the operator informed of that history. Fail-closed decision wrapper; server OCO + depth/spread guards + daily breaker kept.
+- v8.0-scalp (2026-11-14): operator-directed aggressive scalping (5x isolated, tight scalp TP/SL, fast re-entry, loose signal gates). Constant-only change; sizing/bracket formulas unchanged.
+- This public mirror tracks the live engine; the zero-credential demo (terminal/sample_data) is refreshed from a live build via terminal/refresh-sample.sh so it cannot rot.

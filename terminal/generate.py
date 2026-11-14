@@ -297,7 +297,7 @@ ENGINE = {
     "venue": "OKX EUROPE (EEA) · X-PERPS",
     "cycle_s": 300,
     "quote": "USDC",
-    "decision_model": "halogen-qwen3.8-flash-next (self-hosted)",
+    "decision_model": "TypeSafe jev-latest (decisions) + halogen (desk text)",
     "desk_model": LLM_MODEL,
     "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
     "spot_book": {
@@ -790,7 +790,7 @@ def build_funnel(events, universe):
             u = e.get("usage") or {}
             tok_in += u.get("input_tokens") or 0
             tok_out += u.get("output_tokens") or 0
-            if e.get("model"):   # v7.0+ halogen calls carry a model field
+            if str(e.get("model") or "").startswith("halogen"):   # v9.0: halogen=self-hosted; jev-*/no-model=TypeSafe
                 halogen_calls += 1
                 if (ts or "").startswith(today):
                     halogen_calls_today += 1
@@ -1483,13 +1483,13 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         "signal was retired 2026-10-25 (no edge at its own kill-gate review).\n\n"
     ) if _is_mom else (
         "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
-        "then our SELF-HOSTED halogen-qwen3.8-flash-next model (served on our own hardware via "
-        "chat.obekt.com) returns TYPED JSON decisions (probabilities + confidence, schema-checked, "
+        "then the TypeSafe jev-latest decision API returns TYPED JSON decisions (halogen is used "
+        "only for desk text; probabilities + confidence, schema-checked, "
         "scored in BOTH directions per contract; invalid output fails closed to no_trade); "
         "exits are server-side OCO + trailing stops. News/macro are injected into the model's state. "
-        "Operator directive 2026-11-12 restored LLM decisions on our own model, replacing the "
-        "deterministic v6 fade book; the earlier TypeSafe Jev signal was retired 2026-10-25 "
-        "(no edge at its own kill-gate review).\n\n"
+        "Operator directive 2026-11-14 restored TypeSafe Jev decisions with 5x aggressive scalping, "
+        "replacing the v8 halogen-decision book; Jev had been retired 2026-10-25 (no edge) and was "
+        "re-authorized by the operator informed of that history.\n\n"
     )
     perp_open = [{
         "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),

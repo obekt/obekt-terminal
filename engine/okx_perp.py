@@ -53,7 +53,7 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v7.0-halogen"  # v7.0 (11-12): operator directive — LLM decisions back,
+ENGINE_VERSION = "v9.0-jev"  # v9.0 (11-14): operator-directed — TypeSafe Jev decisions restored (halogen for desk text only), richer data (order-book imbalance), 5x aggressive scalp geometry kept. Jev retired 10-25 for no edge; operator re-authorized informed. Server OCO + depth/spread guards + daily breaker kept.
 # model = self-hosted halogen-qwen3.8-flash-next via chat.obekt.com. Replaces both the
 # deterministic v6.0-fade book and the retired TypeSafe jev-latest decision API.
 LOG = os.path.join(HERE, "perp_log.jsonl")
@@ -73,7 +73,7 @@ UNIVERSE_EXCLUDE = {"NEAR"}
 # Stock/commodity X-Perps (AAPL, TSLA, GOLD, ...) are explicitly NOT traded.
 MAX_JEV_PAIRS = 6  # v4.9.3 (10-21, operator directive): widen opportunity set.
                      # WATCH: input_tokens was ~2840 at 4 pairs; budget alarm 3400.
-MIN_DAY_RANGE_PCT = 1.5        # X-Perp majors move less than EUR small caps
+MIN_DAY_RANGE_PCT = 1.0        # X-Perp majors move less than EUR small caps
 MIN_VOL24H_USD = 300_000
 MIN_TOP5_DEPTH_USD = 1_000     # tiny stakes ($8-16) but never enter a ghost book
 ENTRY_DEPTH_MULT = 3.0
@@ -82,22 +82,22 @@ MAX_SPREAD_PCT = 0.10          # perp books should be tight; skip if not
 # ---------------- cost + bracket ----------------
 PERP_MAKER_PCT = 0.02
 PERP_TAKER_PCT = 0.05
-EDGE_MULT = 4.0
-MIN_TARGET_PCT = 0.6           # cost ~0.08% -> TP floors at 0.6% (was 1.5 on spot;
-MAX_TARGET_PCT = 2.0           # perp round trip is 3x cheaper so targets shrink)
-SL_COST_MULT = 1.75
-SL_FLOOR_PCT = 0.35
-SL_CAP_PCT = 0.80
+EDGE_MULT = 3.0
+MIN_TARGET_PCT = 0.35           # cost ~0.08% -> TP floors at 0.6% (was 1.5 on spot;
+MAX_TARGET_PCT = 0.9           # perp round trip is 3x cheaper so targets shrink)
+SL_COST_MULT = 1.5
+SL_FLOOR_PCT = 0.25
+SL_CAP_PCT = 0.5
 ARM_TP_RATIO = 0.40            # trail geometry scaled off TP (v3.5 proven ratios)
 GB_TP_RATIO = 0.23
 FLOOR_TP_RATIO = 0.07
-MIN_VOL30_PCT = 0.30   # v4.9: 450 rejects since 10-17 had median vol30 0.27;
+MIN_VOL30_PCT = 0.20   # v4.9: 450 rejects since 10-17 had median vol30 0.27;
                        # 0.35 was calibrated on a moving tape — weekend books sit
                        # 0.25-0.35. 0.30 keeps the reachability logic vs the
                        # ~0.6% TP while admitting the bulk of the opportunity set.           # realized 30m range reachability gate
 
 # ---------------- risk / sizing ----------------
-PERP_LEV = "2"                 # isolated leverage; v6.0-fade ALL-IN (operator 10-30:
+PERP_LEV = "5"                 # isolated leverage; v6.0-fade ALL-IN (operator 10-30:
 # "go all in... you can spend it all... win big"). 2x isolated: liqPx ~50% away,
 # still far beyond the 15% catastrophic stop; margin/leg ≈ 49% of equity, 2 legs.
 # FULL-CAPITAL (10-15, operator directive: "if you see opportunity use entire
@@ -121,7 +121,7 @@ MAX_NOTIONAL_USD = 250.0       # v6.0-fade: bug guard only against a garbage usd
                                # read; real per-leg budget = eq*0.98*lev/2 ≈ $120 at eq $124
 MAX_OPEN = 4             # v5.1 (10-26): 4 slots x $30 = up to $120 of ~$128 equity;
                          # headroom kept so the last entry can't bounce on avail margin
-MAX_ENTRIES_PER_CYCLE = 2  # v4.9.6: cycle() loop below now real (break->continue on fill)
+MAX_ENTRIES_PER_CYCLE = 3  # v4.9.6: cycle() loop below now real (break->continue on fill)
 LIQ_BUFFER_PCT = 15.0          # force-close if price comes within 15% of liqPx
 
 # ---------------- gates / timing ----------------
@@ -153,15 +153,15 @@ LIQ_BUFFER_PCT = 15.0          # force-close if price comes within 15% of liqPx
 # ~6% flow (~8-9 attempts/day), 4x the pre-v4.7 rate at 1/5 the stake. This is
 # distribution re-calibration, not outcome-mining: NO closed-trade outcomes were
 # used to pick the thresholds. Calibration count restarts at v4.9.
-CONF_FLOOR = 0.20
+CONF_FLOOR = 0.15
 CONF_BAR = 0.50
-MARGIN_BAR = 0.15   # v4.9: re-baselined with CONF_FLOOR (see above)
-NOUL_BAR = 0.45
+MARGIN_BAR = 0.10   # v4.9: re-baselined with CONF_FLOOR (see above)
+NOUL_BAR = 0.40
 FILL_WAIT_S = 25
-TIME_STOP_MIN = 30
-STALE_EXIT_MIN = 60
-COOLDOWN_MIN = 20
-WIN_COOLDOWN_MIN = 10
+TIME_STOP_MIN = 15
+STALE_EXIT_MIN = 30
+COOLDOWN_MIN = 5
+WIN_COOLDOWN_MIN = 3
 DAILY_LOSS_PCT = 8.0           # USDC-equity breaker -> STOP_PERP (auto-clears UTC roll)
 PAPER_EQUITY_USD = 129.47      # v4.9.7: dry-run paper bankroll (kill-gate closed the
                                # live book 10-25; real USDC sits in Simple Earn flexible)
@@ -505,7 +505,15 @@ def pair_features(inst):
         chg7d = (last / d1d[0]["c"] - 1) * 100 if len(d1d) >= 7 else None
     except Exception:
         chg4h = chg7d = None
-    return {"bid": bid, "ask": ask, "last": last,
+    # v9.0: order-book pressure (top-5 bid vs ask depth) — scalping signal for Jev
+    try:
+        _bk = J.api("GET", f"/api/v5/market/books?instId={inst}&sz=5", private=False)[0]
+        _bd = sum(float(l[0]) * float(l[1]) for l in _bk.get("bids", [])[:5])
+        _ad = sum(float(l[0]) * float(l[1]) for l in _bk.get("asks", [])[:5])
+        book_imb = round((_bd - _ad) / (_bd + _ad), 3) if (_bd + _ad) > 0 else 0.0
+    except Exception:
+        book_imb = None
+    return {"bid": bid, "ask": ask, "last": last, "book_imbalance": book_imb,
             "spread_pct": round((ask - bid) / ask * 100, 4),
             "chg_30min_pct": round(chg30, 3), "volatility_30min_pct": round(vol30, 3),
             "range30_pos_pct": round(rpos, 1), "bars_up_of_6": bars_up,
@@ -904,8 +912,8 @@ def decide():
     # whole equity per pick; with 4 slots that would over-commit margin 4x.
     budget = min(eq * MAX_NOTIONAL_FRAC * float(PERP_LEV) / MAX_OPEN, MAX_NOTIONAL_USD)
     state = {
-        "context": ("Two-way momentum scalping on OKX Europe X-Perps (MiFID-regulated "
-                    "USD-margined expiry perps, isolated margin, 2x). You may go LONG or "
+        "context": ("Two-way AGGRESSIVE momentum scalping on OKX Europe X-Perps (MiFID-regulated "
+                    "USD-margined expiry perps, isolated margin, 5x AGGRESSIVE SCALPING). You may go LONG or "
                     "SHORT each pair. Fees: maker 0.02% / taker 0.05% — round trip ~0.07-0.11%, "
                     "much cheaper than spot. Entry is maker-first with a one-shot IOC chase; exits are market on trigger. "
                     "Per pair: spread_pct, chg_30min_pct, volatility_30min_pct, "
@@ -913,7 +921,7 @@ def decide():
                     "chg_7d_pct, funding_bps (positive = longs pay shorts; heavily positive "
                     "funding with a stretched range30_pos = crowded long, short-side edge; "
                     "negative funding = crowded short), ls_ratio (crowd long/short accounts, "
-                    ">1 = crowd long) and taker_buy_share (>0.5 = net aggressive buying). "
+                    ">1 = crowd long) and taker_buy_share (>0.5 = net aggressive buying), book_imbalance (-1..1, >0 = bid-heavy buy pressure, <0 = ask-heavy sell pressure). "
                     "btc_chg_30m_pct / btc_chg_4h_pct: the whole alt complex is beta to BTC — "
                     "a LONG against a falling BTC or a SHORT against a rising BTC is a "
                     "low-quality setup regardless of the pair's own numbers; measured on our "
@@ -922,13 +930,13 @@ def decide():
                     "result, minutes ago), for information only. news_catalysts and "
                     "macro_events_24h / macro_released_3h_surprises: headlines and high-"
                     "impact macro prints (a surprise print in the last hours is the current "
-                    "tape driver; a big event within 1-2h means headline risk over a 45-min "
+                    "tape driver; a big event within 1-2h means headline risk over a fast scalp "
                     "hold). Bracket: tp_pct/sl_pct/trail numbers "
                     "are the exit geometry your trade will be managed with. "
                     "LONG setups: pullback in uptrend (chg_7d>0, mild chg_30 dip, range30_pos "
                     "mid), real buying. SHORT setups: blow-off into 30m high with chg_7d flat/"
                     "negative, or crowded funding + stalling momentum. Symmetric rule: the "
-                    "move must plausibly reach tp_pct within 30-90min given volatility_30min. "
+                    "move must plausibly reach tp_pct within 15-45min given volatility_30min. "
                     "When unsure pick no_trade: a missed scalp costs 0, a chop costs ~0.3-0.6%. "
                     "Your job is to find the highest expected-value direction on the best pair. "
                     "Pick no_trade ONLY if both long and short are negative-EV net of the "
@@ -957,18 +965,23 @@ def decide():
         k = inst.split("-")[0].lower()
         bk = tradeable[inst]["bracket"]
         questions[f"p_up_{k}"] = {"type": "noul",
-            "instructions": f"{inst.split('-')[0]} will RISE at least {bk['trail_arm_pct']}% within the next 45 minutes"}
+            "instructions": f"{inst.split('-')[0]} will RISE at least {bk['trail_arm_pct']}% within the next 30 minutes"}
         questions[f"p_dn_{k}"] = {"type": "noul",
-            "instructions": f"{inst.split('-')[0]} will FALL at least {bk['trail_arm_pct']}% within the next 45 minutes"}
+            "instructions": f"{inst.split('-')[0]} will FALL at least {bk['trail_arm_pct']}% within the next 30 minutes"}
         slug[f"long_{k}"] = (inst, "long")
         slug[f"short_{k}"] = (inst, "short")
         crit[f"long_{k}"] = f"Open LONG {inst} now"
         crit[f"short_{k}"] = f"Open SHORT {inst} now"
     crit["no_trade"] = "No pair has a profitable setup in either direction; stay flat"
     questions["best_action"] = {"type": "choice",
-        "instructions": "Which single action maximizes expected profit net of costs over the next 30-90 minutes",
+        "instructions": "Which single action maximizes expected profit net of costs over the next 15-45 minutes",
         "criteria": crit}
-    ans = halogen_decide(state, questions)
+    try:
+        ans = J.jev(state, questions)
+    except Exception as e:
+        logrec({"event": "perp_llm_err", "model": "jev-latest", "err": str(e)[:200]})
+        rec["why"] = "jev error (fail-closed)"
+        return rec
     a = ans["answers"]
     choice = a["best_action"]["choice"]
     conf = a["best_action"].get("confidence", 0)
