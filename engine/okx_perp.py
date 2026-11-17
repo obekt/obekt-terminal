@@ -53,7 +53,7 @@ import okx_jev as J   # reuse signed api(), ticker(), candles(), jev(), balances
 # v4.9.6 (10-24): MULTI-SLOT — MAX_OPEN 1->4 (per-trade $25 cap unchanged),
 # cycle() entries loop fixed (was break-on-fill = MAX_ENTRIES_PER_CYCLE dead),
 # unit TimeoutStartSec 240->360. Not a Jev-calibration change (prompt/thresholds untouched).
-ENGINE_VERSION = "v9.0-jev"  # v9.0 (11-14): operator-directed — TypeSafe Jev decisions restored (halogen for desk text only), richer data (order-book imbalance), 5x aggressive scalp geometry kept. Jev retired 10-25 for no edge; operator re-authorized informed. Server OCO + depth/spread guards + daily breaker kept.
+ENGINE_VERSION = "v10.0-fade"  # v10.0 (11-16): FULL ALGORITHM SWAP at the v9 kill-gate (84 closes, net -14.16 USDC, fees 64% of loss). Jev RETIRED from decisions again; the live engine is now okx_mom.py — deterministic 48h fade, re-validated 11-16 on fresh 100d data (thr8 H24 cap2 TP3 SL2: positive in every window incl 2x-fee stress). This file is execution machinery only (open/close/OCO/status/breaker); its scalp gates are inert. PERP_LEV back to 2 (fade-validated leverage).
 # model = self-hosted halogen-qwen3.8-flash-next via chat.obekt.com. Replaces both the
 # deterministic v6.0-fade book and the retired TypeSafe jev-latest decision API.
 LOG = os.path.join(HERE, "perp_log.jsonl")
@@ -97,7 +97,7 @@ MIN_VOL30_PCT = 0.20   # v4.9: 450 rejects since 10-17 had median vol30 0.27;
                        # ~0.6% TP while admitting the bulk of the opportunity set.           # realized 30m range reachability gate
 
 # ---------------- risk / sizing ----------------
-PERP_LEV = "5"                 # isolated leverage; v6.0-fade ALL-IN (operator 10-30:
+PERP_LEV = "2"                 # isolated leverage; v6.0-fade ALL-IN (operator 10-30:
 # "go all in... you can spend it all... win big"). 2x isolated: liqPx ~50% away,
 # still far beyond the 15% catastrophic stop; margin/leg ≈ 49% of equity, 2 legs.
 # FULL-CAPITAL (10-15, operator directive: "if you see opportunity use entire

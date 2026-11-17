@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""okx_mom.py — v6.0-fade: deterministic cross-sectional 48h MEAN-REVERSION (fade)
+"""okx_mom.py — v10.0-fade: deterministic cross-sectional 48h MEAN-REVERSION (fade)
 engine for the OKX EEA X-Perp book. Replaces v5.2-mom (operator directive 10-30:
 "trading is still losing... go all in and try something new"; live verdict: 63
 closes, realized -0.63 USDC, 39 SL fills -10.48, 14d momentum kept entering local
@@ -7,9 +7,9 @@ extremes into a chop tape — backtest l30 for L336 H6 had already flipped to
 -0.43%/d).
 
 Signal (48h fade): rank the 30 most liquid XPERPs by 48h return; any coin that
-moved >= 5% (either way) is a fade candidate — LONG the losers / SHORT the
+moved >= 8% (either way) is a fade candidate (v10; was 5% in v6) — LONG the losers / SHORT the
 winners, taking the 2 MOST EXTREME movers (cap2), hold 24h, TP 3% (server OCO),
-catastrophic SL 15% (server OCO + poll backup). All-in sizing: ~equity x 0.98
+tight SL 2% (server OCO + poll backup; v10 — was catastrophic 15% in v6). All-in sizing: ~equity x 0.98
 notional per leg at 2x isolated (~49% equity margin/leg) — OPERATOR-AUTHORIZED
 10-30 ("go all in... you can spend it all... win big").
 
@@ -37,11 +37,18 @@ meta -> perp_positions.json, status snapshot -> perp_status.json) so the public
 deck keeps working unchanged. NO Jev/LLM calls: fully deterministic, ~0 cost.
 
 Modes: cycle (manage+rebalance+status), status, ranks (debug scan).
-Kill-gate v6.0 (pre-registered 10-30): at 15 rebalance cycles (~15d at H24) OR
-12 days, whichever FIRST: live realized net <= 0 → close/replace (pre-authorized
-pattern). Mechanics review day 3 (fills, OCO arms, sizing, breaker sanity).
-Live expectation to beat: OOS1 +0.50%/d at 1x-equivalent (~+1.0%/d at 2x on
-deployed equity); l30 said +0.91 — regime may not hold, judge at the gate.
+v10 RE-VALIDATION (11-16, fresh 100d 1H data 08-24..11-16, 28 coins, same
+harness mr_grid/stage3/stage5): the v6 winner (thr5 H24 TP3 SL15) DECAYED to
++0.018%/d and goes NEGATIVE under 2x-fee stress — retired. Only survivor of the
+full grid (both-OOS-halves rule + 2x-fee stress + tail table): thr8 H24 cap2
+TP3 SL2 = +0.175%/d full, OOS1 +0.259 / OOS2 +0.097 / l30 +0.428 / l50 +0.147;
+fee-2x still +0.080%/d (OOS2 +0.002). Tail: worst leg/day -2.1%, maxDD -15.5%
+at 1x (~-31% at 2x), 73 SL / 57 TP / 8 time exits per 138 legs. HONEST: thin
+edge, recent-window beta inflates l30 (blind all-short did +1.42%/d l30 but
+FAILS OOS1); live expectation = OOS1 +0.26%/d at 1x (~+0.5%/d at 2x), floor
++0.08%/d under fee stress. Kill-gate v10 (pre-registered 11-16): 15 rebalance
+cycles (~15d at H24) OR 12 days (~11-28), whichever FIRST: live realized net
+<= 0 → replace (pre-authorized). Mechanics review day 3.
 """
 import json, os, sys, time, datetime
 
@@ -50,15 +57,15 @@ sys.path.insert(0, HERE)
 import okx_jev as J          # api/ticker/instruments helpers (EEA key auth)
 import okx_perp as P         # execution machinery + files + constants
 
-ENGINE_VERSION = "v6.0-fade"
+ENGINE_VERSION = "v10.0-fade"
 DRY = P.DRY                   # --dry-run passthrough (smoke tests only)
 
 # ---- strategy parameters (from the 10-30 fade grid, see docstring) ----------
 MOM_LOOKBACK_H   = 48         # 48h rank lookback (L48 in hourly bars)
-FADE_THR_PCT     = 5.0        # |48h move| >= 5% required to be a fade candidate
+FADE_THR_PCT     = 8.0        # v10 (11-16 regrid): only TRUE extremes — thr5 edge decayed to ~0 on fresh data
 MOM_HOLD_MIN     = 1440       # 24h hold, then full rebalance (H24)
 MOM_K            = 2          # cap2: the 2 MOST EXTREME movers total (not per side)
-MOM_SL_PCT       = 15.0       # catastrophic stop (backtest: costs -0.013%/d, caps -26% tail)
+MOM_SL_PCT       = 2.0        # v10: tight stop — 53% of legs stop at -2%, winners run to TP3; worst day -2.1% (1x)
 MOM_TP_PCT       = 3.0        # reversion target (server OCO) — the edge IS the TP3 grind
 MOM_UNIVERSE     = 30         # rank within the 30 most liquid XPERPs
 MOM_MIN_VOL24H   = 3_000_000  # USD turnover floor (volCcy24h*last — UNIT FIX)

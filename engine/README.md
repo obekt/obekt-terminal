@@ -1,10 +1,11 @@
 # `engine/` — the autonomous traders
 
-**One live book, three engine files.** As of 2026-10-25 the live X-Perp book is
-driven by `okx_mom.py` — a deterministic cross-sectional momentum strategy that
-replaced `okx_perp.py`'s LLM-signal decision path after that signal's
-pre-committed kill-gate review found no edge (79 closes, net −1.5 USDC — the
-full honest record is on the dashboard). The spot EUR engine was retired
+**One live book, three engine files.** As of 2026-11-16 the live X-Perp book is
+driven by `okx_mom.py` — a deterministic cross-sectional 48h MEAN-REVERSION (fade)
+strategy (v10.0-fade). LLM decision paths (TypeSafe Jev, then self-hosted halogen)
+were retired at their pre-committed kill-gates — most recently the v9 5x aggressive
+scalp on 2026-11-16 (84 closes, net −14.16 USDC, fees = 64% of the loss; the full
+honest record is on the dashboard). The spot EUR engine was retired
 2026-10-15 (timer disabled, source and ledger kept). The plumbing is shared:
 `okx_mom.py` imports `okx_perp.py` (execution: entries with attached OCO,
 realized-fee-capturing closes, state/log files, risk breaker), which imports
@@ -20,7 +21,7 @@ kill-switches and daily breakers.
 
 | file | what it is |
 |---|---|
-| `okx_mom.py` | **LIVE book — XS MOMENTUM (v5.2-mom, two-way, USD-settled X-Perps).** Deterministic, no LLM in the loop: rank the ≤30 most liquid XPERPs by 14-day return, long the strongest 2 / short the weakest 2 ($30/leg, 1× isolated), full rebalance every 6h, 1.5% protective stop (server OCO + poll backup). Selected from a refreshed 100-day OHLC grid with intrabar stops (full-window +0.60%/d, last-30d +2.1%/d at 16 legs/day; the signal is regime-sensitive — the Jul–Aug out-of-sample half was negative, and the earlier 24h-hold pick did not survive the window shift). ~340 lines, imports `okx_perp`. |
+| `okx_mom.py` | **LIVE book — 48h FADE (v10.0-fade, two-way, USD-settled X-Perps).** Deterministic, no LLM in the loop: rank the ≤30 most liquid XPERPs by 48h return; FADE the 2 most extreme movers with \|48h\| ≥ 8% (long the biggest losers / short the biggest winners), 24h hold then full rebalance, TP 3% + tight SL 2% (server OCO + poll backup), 2x isolated all-in sizing (eq×0.98×2/2 per leg). Re-validated 2026-11-16 on a fresh 100-day hourly grid (28 coins): the ONLY config positive in every window (full/OOS halves/last-30/last-50) incl. 2x-taker fee stress (+0.175%/d base, +0.080%/d fee-stressed; worst leg/day −2.1% at 1x). The earlier v6 geometry (thr 5%, SL 15%) decayed to ~zero on fresh data and was retired; kill-gate pre-registered: 15 rebalances or 12 days, net ≤0 → replace. ~400 lines, imports `okx_perp`. |
 | `okx_perp.py` | **Execution host + retired Jev-signal book (X-PERPS two-way).** Its Jev LLM decision path is retired as the live signal-maker (kill-gate 2026-10-25: 111 closes, −4.47 USDC, no edge); the file stays load-bearing twice over: `okx_mom.py` imports its execution machinery (open/close with attached OCO + realized fees, meta/log/state files, breaker), and its `--dry-run` paper mode carries true shadow bookkeeping (persisted positions, virtual fills/fees, fixed paper bankroll) for validating future candidates without capital. ~1000 lines. |
 | `okx_jev.py` | **RETIRED book — SPOT (long-only, EUR pairs).** Kept for two reasons: it is the honest 132-trade record of the first strategy, and `okx_perp.py` imports it as a library (signed API, market data, Jev client, `balances()`). The whole engine: universe scan → deterministic gates → Jev decision → risk veto → execution → position management. ~1600 lines, stdlib only (no pip deps). |
 | `news_feed.py` | Keyless RSS catalyst feed (Cointelegraph/CNBC/Yahoo Finance) → `catalyst.json`, 30-min freshness guard. Called by spot `cycle`. |
