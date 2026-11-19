@@ -69,7 +69,7 @@
         // word traders use; the detail goes in the tooltip and the hero already
         // spells out "no open X-Perp position · capital in USDC".
         badge.textContent = "◆ FLAT";
-        badge.title = "No open position — capital sitting in USDC";
+        badge.title = "No open position — capital sitting in USD cash";
         badge.className = "topmeta pos-badge flat";
       } else {
         badge.innerHTML = ob.map(r => {
@@ -91,7 +91,7 @@
       ? '<span class="neg">⚠ FEED STALE — LAST SNAPSHOT ' + ageMin + "M AGO (ENGINE MAY BE PAUSED)</span> · "
       : "") +
       "SNAPSHOT " + D.generated.replace("T", " ").slice(0, 19) +
-      " UTC · BUILD " + D.build_ms + "MS · FEED: OKX EEA PUBLIC + LIVE ENGINE LOG";
+      " UTC · BUILD " + D.build_ms + "MS · FEED: YAHOO FINANCE PUBLIC + LIVE ENGINE LOG";
   }
 
   /* ---------- cycle countdown ---------- */
@@ -151,7 +151,7 @@
     }
     const P = D.perp || {};
     (P.positions || []).forEach(p => rows.push({
-      book: "PERP", side: p.side || "long",
+      book: "STOCKS", side: p.side || "long",
       inst: (p.inst || "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, ""),
       upc: p.upc, note: "$" + fmt(p.notional_usd)
     }));
@@ -174,7 +174,7 @@
     let posV, posSub, posCls;
     if (!ob.length) {
       posV = "FLAT";
-      posSub = spotRetired ? "no open X-Perp position · capital in USDC" : "no open position · both engines in cash";
+      posSub = spotRetired ? "no open stock position · capital in USD" : "no open position · both engines in cash";
       posCls = "w";
     } else {
       const r = ob[0];
@@ -190,7 +190,7 @@
       ? sgn(ps.net_all_pct) + "%"
       : sgn(s.net_all_pct) + "%";
     const allTimeSub = spotRetired
-      ? ((ps.trades_all || 0) + " X-Perp trades · $" + fmt(ps.capital_usd, 2) + " in book")
+      ? ((ps.trades_all || 0) + " stock trades · $" + fmt(ps.capital_usd, 2) + " in book")
       : (s.trades_all + " trades · " + fmt(s.win_rate_pct, 1) + "% win");
     // LATEST VOTE: with spot retired the live decision stream is the perp book's.
     // Fall back to spot's jev_latest only when the perp book has never decided.
@@ -209,14 +209,14 @@
     const todayCls = (todayPct || 0) >= 0 ? "g" : "r";
     $("hero-body").innerHTML =
       cell("OPEN POSITION", posV, posSub, posCls, true) +
-      cell(spotRetired ? "PERP EQUITY (LIVE)" : "EQUITY", "$" + fmt(P.usdc_equity, 2),
-        spotRetired ? "USDC collateral · 1x isolated" : "spot EUR + $" + fmt(P.usdc_equity) + " perp USDC",
+      cell(spotRetired ? "STOCKS EQUITY (LIVE)" : "EQUITY", "$" + fmt(P.usdc_equity, 2),
+        spotRetired ? "USD cash · long-only · no leverage" : "spot EUR + $" + fmt(P.usdc_equity) + " perp USDC",
         "w", true) +
       cell("TODAY", sgn(todayPct) + "%", todayTrades + " trades closed \u00b7 UTC day", todayCls, true) +
-      cell(spotRetired ? "ALL-TIME — X-PERPS" : "ALL-TIME", allTimeV, allTimeSub,
+      cell(spotRetired ? "ALL-TIME — STOCKS" : "ALL-TIME", allTimeV, allTimeSub,
         cls(spotRetired ? ps.net_all_pct : s.net_all_pct)) +
       cell("LATEST VOTE", lvNoTrade ? "FLAT" : lvArrow + lvChoice.replace("BUY_", "").replace("SHORT_", "").replace("LONG_", ""),
-        lvNoTrade ? "model: standing aside" : "conf " + fmt(lvConf) + (spotRetired ? " · X-Perp" : ""),
+        lvNoTrade ? "model: standing aside" : "conf " + fmt(lvConf) + (spotRetired ? " · news" : ""),
         lvNoTrade ? "w" : "g") +
       cell("CYCLES RUN", (f.cycles || 0).toLocaleString(), (f.jev_calls || 0) + " model calls · ~5m each", "") +
       cell("UPTIME", f.uptime_h ? Math.floor(f.uptime_h / 24) + "D " + Math.round(f.uptime_h % 24) + "H" : "—", "since " + (f.first_ts || "").slice(5, 10), "w") +
@@ -243,7 +243,7 @@
       (superseded ? " · ⚠ PRE-DATES CURRENT POSITION" : "");
     $("desk-note").textContent = dn.desk_note || "AWAITING DESK COMMENTARY…";
     $("decision-line").textContent = "▸ " + (dn.decision_line || "") +
-      (superseded ? "  [position opened after this note was written — see the badge and X-Perps panel above]" : "");
+      (superseded ? "  [position opened after this note was written — see the badge and stocks panel above]" : "");
   }
 
   /* ---------- perf ---------- */
@@ -339,20 +339,54 @@
   }
   function renderGates(D) {
     // The DECISION GATES panel must show the LIVE book's call scored against the
-    // LIVE book's own thresholds. With spot retired (2026-10-15) that is the perp
-    // book: its jev event is flat (conf/margin/noul at top level) and its
-    // criteria were computed against okx_perp.py's bars — not spot's, which run a
-    // different CONF_FLOOR (0.50 vs 0.40). Falling back to spot only if the perp
-    // engine has never logged a call.
+    // LIVE book's own thresholds, parsed from its source by generate.py.
+    // Stocks era (2026-11-19+): halogen news call vs CONF_FLOOR + impact gate,
+    // plus the deterministic pre-gates. Retired OKX/spot shapes still render
+    // their historical bars when their frozen calls are shown.
     const spotRetired = /retired/i.test(String(((D.engine || {}).spot_book || {}).status || ""));
     const pj = ((D.perp || {}).last_jev) || {};
     const usePerp = spotRetired && pj && pj.criteria;
     const j = usePerp ? pj : D.jev_latest;
     const r = D.risk || {};
+    const P = D.params || {};
     const out = [];
-    const isMom = ((D.perp || {}).strategy) === "momentum";
-    if (isMom) {
-      // v6.0-fade: fade-native decision rows — no Jev call exists to score.
+    const strat = ((D.perp || {}).strategy);
+    const isNews = strat === "news";
+    const isMom = strat === "momentum";
+    if (isNews) {
+      // v11.0-news: news-native decision rows. Pre-gates run BEFORE the LLM is
+      // asked; conf/impact score the call itself. Bars come from D.params
+      // (parsed from alpaca_stocks.py — never hardcoded).
+      const lm = (D.perp || {}).last_mom || {};
+      const c = pj.criteria || {};
+      const na = !pj.chosen_inst;
+      const confV = pj.conf;
+      out.push(gateRow("NEWS SIGNAL — FRESH HEADLINES ≤" + fmt(P.NEWS_WINDOW_MIN, 0) + "M (ALPACA NEWS API)", true,
+        "universe " + (lm.n_universe || (D.perp || {}).universe.length || "?") + " stocks · " +
+        (lm.n_fresh_headlines === undefined ? "?" : lm.n_fresh_headlines) + " fresh headlines · " +
+        (lm.n_ranked || 0) + " candidates last scan", false));
+      out.push(gateRow("MARKET HOURS 09:30–16:00 ET", (D.perp || {}).market_open !== false,
+        (D.perp || {}).market_open === false ? "CLOSED — entries wait for the next open (normal)" : "regular session open", false));
+      out.push(gateRow("SPREAD ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · ASK-vs-LAST ≤" + fmt(P.ASK_VS_LAST_PCT, 2) + "% · QUOTE ≤" + fmt(P.QUOTE_STALE_S, 0) + "S", true,
+        "deterministic pre-gates, checked before any LLM call", false));
+      out.push(gateRow("CHASE CAP ≤+" + fmt(P.CHASE_CAP_PCT, 1) + "% DAY · KNIFE FLOOR ≥" + fmt(P.KNIFE_FLOOR_PCT, 1) + "%", true,
+        "no chasing a name already up big · no catching a collapsing one", false));
+      if (pj && pj.criteria) {
+        out.push(gateRow("CONF FLOOR ≥" + fmt(c.conf_floor, 2) + " (stocks burn-in)", na ? null : c.conf_ok,
+          "actual " + fmt(confV) + " · halogen typed-JSON confidence", na));
+        out.push(gateRow("IMPACT ≥ MEDIUM", na ? null : c.impact_ok,
+          "model tagged: " + (c.impact || "—") + " · low-impact news never trades", na));
+        out.push(gateRow("FINAL ENGINE VERDICT", c.fire,
+          c.fire ? "TRADE AUTHORIZED" : (na ? "MODEL: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
+      }
+      out.push(gateRow("MAX OPEN " + fmt(P.MAX_OPEN, 0) + " SLOTS · ONE ENTRY/SYMBOL/DAY", true,
+        "all-in fractional sizing ~equity×" + fmt(P.MAX_NOTIONAL_FRAC, 2) + "/" + fmt(P.MAX_OPEN, 0) + " per leg", false));
+      out.push(gateRow("TP ≥" + fmt(P.TP_SL_RATIO, 1) + "× SL · TP " + fmt(P.TP_MIN, 1) + "–" + fmt(P.TP_MAX, 1) + "% · SL " + fmt(P.SL_MIN, 1) + "–" + fmt(P.SL_MAX, 1) + "%", true,
+        "bracket geometry clamped in code, not by the model", false));
+      out.push(gateRow("ENGINE-MANAGED TP/SL + " + fmt(P.MAX_HOLD_H, 0) + "H TIME EXIT", true,
+        "fractional orders can't carry server brackets — the engine polls 5m and exits", false));
+    } else if (isMom) {
+      // retired OKX v10 fade shape (kept for frozen-history rendering)
       const lm = (D.perp || {}).last_mom || {};
       const fmtLegs = (arr) => (arr || []).map((x) => x[0] + " " + (x[1] > 0 ? "+" : "") + x[1] + "%/48h").join("  ·  ") || "\u2014";
       const anchor = (D.perp || {}).mom_anchor;
@@ -384,35 +418,42 @@
       out.push(gateRow(usePerp ? "NOUL MOVE-PROB ≥ " + fmt(c.noul_bar, 2) : "NOUL RISE-PROB ≥ " + fmt(c.noul_bar, 2), c.noul_ok, "bar " + fmt(c.noul_bar) + " · actual " + fmt(noulV), na));
       out.push(gateRow("FINAL ENGINE VERDICT", c.fire, c.fire ? "TRADE AUTHORIZED" : (na ? "MODEL: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
     }
-    out.push(gateRow(usePerp ? "DEPTH FLOOR (top5 book ≥ 3× notional)" : "DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
-    out.push(gateRow("DAILY LOSS BREAKER −8%", !r.breaked && !((D.perp || {}).breaked),
+    if (!isNews) {
+      out.push(gateRow(usePerp ? "DEPTH FLOOR (top5 book ≥ 3× notional)" : "DEPTH FLOOR (top5 book ≥ €1.5k)", true, "hard pre-entry re-check, ≥3× stake"));
+    }
+    out.push(gateRow("DAILY LOSS BREAKER −" + fmt(isNews ? P.DAILY_LOSS_PCT : 8, 0) + "%", !r.breaked && !((D.perp || {}).breaked),
       (r.breaked || (D.perp || {}).breaked) ? "TRIPPED — HALTED" : "clear"));
-    // ACTIVE cooldowns only (exits maps are historical). Windows come from the
-    // LIVE engine's source via live_risk (never hardcoded — they drifted twice),
-    // falling back to the retired spot book's windows if absent.
-    const now = Date.now();
-    const lr = D.live_risk || {};
-    const lossMin = lr.loss_min || 20, winMin = lr.win_min || 10;
-    const cdExits = (usePerp ? lr.exits : r.cooldowns) || {};
-    const active = [];
-    Object.entries(cdExits).forEach(([inst, e]) => {
-      const ts = Date.parse(e.ts || "");
-      if (!ts) return;
-      const ageMin = (now - ts) / 60000;
-      const win = (e.upc || 0) > 0;
-      const lim = win ? winMin : lossMin;
-      if (ageMin < lim) {
-        // perp exit keys are "INST:side"; spot keys are plain "PAIR-EUR"
-        let nm = String(inst), sd = "";
-        const ci = nm.indexOf(":");
-        if (ci > 0) { sd = nm.slice(ci + 1); nm = nm.slice(0, ci); }
-        nm = nm.replace("-EUR", "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, "");
-        active.push(nm + (sd ? "/" + sd : "") + " " + Math.round(lim - ageMin) + "m");
-      }
-    });
-    out.push(gateRow("PAIR COOLDOWNS (win " + winMin + "m / loss " + lossMin + "m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
-    out.push(gateRow("MOMENTUM GATES PRE-MODEL", true, "chg30 · bars_up · range30 · vol30 · taker share"));
-    out.push(gateRow("SERVER-SIDE OCO TP/SL + HWM TRAIL", true, "exits execute on-exchange, even offline"));
+    if (isNews) {
+      const lr = D.live_risk || {};
+      const acted = lr.acted_today || [];
+      out.push(gateRow("RE-ENTRY LOCKOUT — ONE ENTRY PER SYMBOL PER DAY", true,
+        acted.length ? "ALREADY ENTERED TODAY: " + acted.join(", ") : "no symbol used its daily entry yet"));
+    } else {
+      // ACTIVE cooldowns only (exits maps are historical). Windows come from the
+      // engine's source via live_risk, falling back to the retired spot windows.
+      const now = Date.now();
+      const lr = D.live_risk || {};
+      const lossMin = lr.loss_min || 20, winMin = lr.win_min || 10;
+      const cdExits = (usePerp ? lr.exits : r.cooldowns) || {};
+      const active = [];
+      Object.entries(cdExits).forEach(([inst, e]) => {
+        const ts = Date.parse(e.ts || "");
+        if (!ts) return;
+        const ageMin = (now - ts) / 60000;
+        const win = (e.upc || 0) > 0;
+        const lim = win ? winMin : lossMin;
+        if (ageMin < lim) {
+          let nm = String(inst), sd = "";
+          const ci = nm.indexOf(":");
+          if (ci > 0) { sd = nm.slice(ci + 1); nm = nm.slice(0, ci); }
+          nm = nm.replace("-EUR", "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, "");
+          active.push(nm + (sd ? "/" + sd : "") + " " + Math.round(lim - ageMin) + "m");
+        }
+      });
+      out.push(gateRow("PAIR COOLDOWNS (win " + winMin + "m / loss " + lossMin + "m)", true, active.length ? "ACTIVE: " + active.join(", ") : "none active right now"));
+      out.push(gateRow("MOMENTUM GATES PRE-MODEL", true, "chg30 · bars_up · range30 · vol30 · taker share"));
+      out.push(gateRow("SERVER-SIDE OCO TP/SL + HWM TRAIL", true, "exits execute on-exchange, even offline"));
+    }
     $("gates-body").innerHTML = out.join("");
   }
 
@@ -424,7 +465,7 @@
     const cum = S.cum_pnl_pct || S.cum_pnl || [];
     const isPct = !!S.cum_pnl_pct;
     $("equity-meta").textContent = cum.length + " CLOSED TRADES · LEDGER-VERIFIED, NET OF FEES · " +
-      (isPct ? "RETURN VS LAUNCH CAPITAL (%)" : "NET P&L");
+      (isPct ? "RETURN VS CAPITAL PUT IN (%)" : "NET P&L");
     if (cum.length < 2) { $("equity-body").textContent = "AWAITING TRADES…"; return; }
     const W = 1000, H = 150, PAD = 8;
     const mn = Math.min(0, Math.min.apply(null, cum)), mx = Math.max(0, Math.max.apply(null, cum));
@@ -450,23 +491,32 @@
       '<text x="8" y="' + (Y(mx) + 10).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">PEAK ' + sgn(mx) + "%</text>" +
       '<text x="8" y="' + Math.min(H - 3, Y(mn) - 3).toFixed(1) + '" fill="#8a867a" font-size="9" font-family="monospace">TROUGH ' + sgn(mn) + "%</text>" +
       "</svg></div>" +
-      '<div class="dim" style="font-size:9.5px">← FIRST CLOSED TRADE ' + esc(mmdd_hhmm(trips.length ? trips[trips.length - 1].close_ts : "")) +
-      " UTC · LATEST " + esc(mmdd_hhmm(trips.length ? trips[0].close_ts : "")) +
-      " UTC → · SHOWING LAST " + Math.min(cum.length, 68) + " OF " + cum.length + " · RAW MATERIAL: OKX FILLS LEDGER, NOT LOG ESTIMATES</div>";
+      '<div class="dim" style="font-size:9.5px">' + (trips.length
+        ? ('← FIRST CLOSED TRADE ' + esc(mmdd_hhmm(trips[trips.length - 1].close_ts)) +
+           " UTC · LATEST " + esc(mmdd_hhmm(trips[0].close_ts)) +
+           " UTC → · SHOWING LAST " + Math.min(cum.length, 68) + " OF " + cum.length)
+        : "NO CLOSED TRADES YET — THE CURVE STARTS AT THE FIRST FILL") +
+      " · RAW MATERIAL: ENGINE LOG OF ALPACA FILLS · SIGNED DAILY → /VERIFY</div>";
   }
 
   /* ---------- funnel ---------- */
   function renderFunnel(D) {
     const f = D.funnel || {}, P = D.params || {};
-    const perps = spotRetired(D);          // live book is the two-way perp book
+    const perps = spotRetired(D);          // live book is the USD stocks book
+    const isNews = ((D.perp || {}).strategy) === "news";
     const sym = perps ? "$" : "€";
-    const volK = Math.round((P.MIN_VOL24H_USD || 300000) / 1000);
-    const depthK = Math.round((P.MIN_TOP5_DEPTH_USD || 1000) / 1000 * 10) / 10;
-    const scanN = perps ? (f.perps_scanned || f.eur_pairs || "all") : (f.eur_pairs || 270);
-    const scanLbl = perps ? "X-Perp contracts" : "EUR pairs";
-    const rows = [
+    const scanN = isNews ? ((D.perp || {}).universe || []).length || f.perps_scanned || "all"
+      : perps ? (f.perps_scanned || f.eur_pairs || "all") : (f.eur_pairs || 270);
+    const scanLbl = isNews ? "US stocks" : perps ? "X-Perp contracts" : "EUR pairs";
+    const rows = isNews ? [
+      [f.pair_scans_all, "UNIVERSE SCANS", "every cycle sweeps " + scanN + " " + scanLbl + " · Alpaca News API headlines ≤" + fmt(P.NEWS_WINDOW_MIN, 0) + "m"],
+      [f.candidates_all, "FRESH-HEADLINE CANDIDATES", "one per symbol · spread ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · quote ≤" + fmt(P.QUOTE_STALE_S, 0) + "s · chase ≤+" + fmt(P.CHASE_CAP_PCT, 1) + "%"],
+      [f.jev_pair_evals_all, "HEADLINES EVALUATED BY THE MODEL", "only pre-gate survivors reach halogen (" + (f.jev_calls || 0) + " calls)"],
+      [f.buy_picks, "BUY PICKS BY THE MODEL", "typed JSON action=buy — conf floor + impact gate still apply"],
+      [f.opens, "POSITIONS OPENED", "conf ≥" + fmt(P.CONF_FLOOR, 2) + " · impact ≥ medium · slot + daily-entry limits cleared"],
+    ] : [
       [f.pair_scans_all, "PAIR LIQUIDITY SCANS", "every cycle sweeps " + scanN + " " + scanLbl + (perps ? " · account-scoped instruments feed" : " · keyless public feed")],
-      [f.candidates_all, "PASSED DEEP FILTERS", "vol ≥" + sym + volK + "k · spread ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · range ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · depth ≥" + sym + depthK + "k"],
+      [f.candidates_all, "PASSED DEEP FILTERS", "vol ≥" + sym + Math.round((P.MIN_VOL24H_USD || 300000) / 1000) + "k · spread ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · range ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · depth ≥" + sym + Math.round((P.MIN_TOP5_DEPTH_USD || 1000) / 1000 * 10) / 10 + "k"],
       [f.jev_pair_evals_all, "SETUPS EVALUATED BY THE MODEL", "only momentum-gate survivors reach the model (" + (f.jev_calls || 0) + " calls)"],
       [f.buy_picks, perps ? "DIRECTIONAL PICKS BY THE MODEL" : "BUY VOTES BY THE MODEL", perps ? "long or short — typed probabilities; the engine bar still applies" : "typed probabilities — the engine bar still applies"],
       [f.opens, "POSITIONS OPENED", "margin/noul bar + live book re-check cleared"],
@@ -488,6 +538,56 @@
 
   /* ---------- decision scatter ---------- */
   function renderScatter(D) {
+    const isNews = ((D.perp || {}).strategy) === "news";
+    const P = D.params || {};
+    if (isNews) {
+      // Stocks era: the news call emits only a confidence (no no_trade
+      // probability exists), so x=conf, y=the day move at decision time —
+      // the chase/knife context the code gates check. Bars are the engine's
+      // parsed CONF_FLOOR / CHASE_CAP / KNIFE_FLOOR, never literals.
+      const pts = (D.scatter || []).filter(p => p.conf !== null && p.conf !== undefined);
+      if (pts.length < 3) { $("scatter-body").textContent = "AWAITING NEWS CALLS…"; return; }
+      const W = 1000, H = 190, PAD = 26;
+      const confBar = (P.CONF_FLOOR !== undefined ? P.CONF_FLOOR : 0.60);
+      const chase = (P.CHASE_CAP_PCT !== undefined ? P.CHASE_CAP_PCT : 7);
+      const knife = (P.KNIFE_FLOOR_PCT !== undefined ? P.KNIFE_FLOOR_PCT : -9);
+      const yMax = Math.max(chase + 1, ...pts.map(p => (p.day_chg_pct || 0) + 1));
+      const yMin = Math.min(knife - 1, ...pts.map(p => (p.day_chg_pct || 0) - 1));
+      const X = (v) => PAD + Math.max(0, Math.min(1, v)) * (W - 2 * PAD);
+      const Y = (v) => H - PAD - ((v - yMin) / ((yMax - yMin) || 1)) * (H - 2 * PAD);
+      const xBar = X(confBar), yChase = Y(chase), yKnife = Y(knife);
+      const colOf = {win: "#00e04b", loss: "#ff3b30", blocked: "#8a867a", open: "#ffb000"};
+      const dots = pts.map(p => {
+        const c = colOf[p.outcome] || "#8a867a";
+        return '<circle cx="' + X(p.conf).toFixed(1) + '" cy="' + Y(p.day_chg_pct || 0).toFixed(1) + '" r="3.4" fill="' + c +
+          '" fill-opacity="0.8" stroke="#000" stroke-width="0.5"><title>' +
+          esc(p.inst + " " + (p.ts || "").slice(5, 16).replace("T", " ") + " · conf " + fmt(p.conf) + " · day " + sgn(p.day_chg_pct) + "% → " + p.outcome +
+            (p.upc !== null && p.upc !== undefined ? " " + p.upc + "%" : "")) + "</title></circle>";
+      }).join("");
+      const counts = {win: 0, loss: 0, blocked: 0, open: 0};
+      pts.forEach(p => { counts[p.outcome] = (counts[p.outcome] || 0) + 1; });
+      const legend = '<div style="display:flex;gap:14px;margin-top:4px;font-size:10px;flex-wrap:wrap">' +
+        '<span style="color:#00e04b">● WIN ' + counts.win + "</span>" +
+        '<span style="color:#ff3b30">● LOSS ' + counts.loss + "</span>" +
+        '<span style="color:#ffb000">● OPEN NOW ' + counts.open + "</span>" +
+        '<span style="color:#8a867a">● BLOCKED BY ENGINE ' + counts.blocked + "</span>" +
+        '<span class="dim" style="margin-left:auto">HOVER A DOT FOR THE CALL DETAILS</span></div>';
+      $("scatter-body").innerHTML =
+        '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%;height:190px;display:block">' +
+        '<line x1="' + PAD + '" y1="' + (H - PAD) + '" x2="' + (W - PAD) + '" y2="' + (H - PAD) + '" stroke="#241f10"/>' +
+        '<line x1="' + PAD + '" y1="' + PAD / 2 + '" x2="' + PAD + '" y2="' + (H - PAD) + '" stroke="#241f10"/>' +
+        '<line x1="' + xBar.toFixed(1) + '" y1="' + (PAD / 2) + '" x2="' + xBar.toFixed(1) + '" y2="' + (H - PAD) + '" stroke="#a8760a" stroke-dasharray="4,3"/>' +
+        '<line x1="' + PAD + '" y1="' + yChase.toFixed(1) + '" x2="' + (W - PAD) + '" y2="' + yChase.toFixed(1) + '" stroke="#7a231c" stroke-dasharray="4,3"/>' +
+        '<line x1="' + PAD + '" y1="' + yKnife.toFixed(1) + '" x2="' + (W - PAD) + '" y2="' + yKnife.toFixed(1) + '" stroke="#7a231c" stroke-dasharray="4,3"/>' +
+        '<text x="' + (xBar + 4).toFixed(0) + '" y="' + (PAD / 2 + 8) + '" fill="#a8760a" font-size="9" font-family="monospace">CONF FLOOR ' + fmt(confBar, 2) + ' →</text>' +
+        '<text x="' + (W - PAD - 4) + '" y="' + (yChase - 4).toFixed(0) + '" fill="#8a867a" font-size="9" text-anchor="end" font-family="monospace">CHASE CAP +' + fmt(chase, 1) + '%</text>' +
+        '<text x="' + (W - PAD - 4) + '" y="' + (yKnife - 4).toFixed(0) + '" fill="#8a867a" font-size="9" text-anchor="end" font-family="monospace">KNIFE FLOOR ' + fmt(knife, 1) + '%</text>' +
+        '<text x="' + (W - PAD) + '" y="' + (H - 8) + '" fill="#8a867a" font-size="9" text-anchor="end" font-family="monospace">HALOGEN CONFIDENCE →</text>' +
+        '<text x="10" y="' + (PAD / 2 + 8) + '" fill="#8a867a" font-size="9" font-family="monospace" transform="rotate(-90 10,' + (PAD / 2 + 8) + ')">DAY MOVE % ↑</text>' +
+        dots + "</svg>" + legend +
+        '<div class="dim" style="margin-top:3px;font-size:9.5px">RIGHT OF THE CONF FLOOR = CALLS THE MODEL BACKED STRONGLY. GREY DOTS = THE MODEL WANTED IN BUT THE CODE GATES (CONF, IMPACT, CHASE, SLOTS) SAID NO — THE MODEL IS AN ADVISOR, THE CODE IS THE RISK MANAGER.</div>';
+      return;
+    }
     const pts = (D.scatter || []).filter(p => p.noul !== null && p.noul !== undefined);
     if (pts.length < 3) { $("scatter-body").textContent = "AWAITING VOTES…"; return; }
     const W = 1000, H = 190, PAD = 26;
@@ -498,7 +598,6 @@
     // Bars come from the LIVE engine's parsed constants, never literals. The old
     // hardcoded 0.25 sat below the engine's real MARGIN_BAR of 0.30, so dots the
     // engine would reject were drawn as having cleared the bar.
-    const P = D.params || {};
     const mBar = (P.MARGIN_BAR !== undefined ? P.MARGIN_BAR : 0.30);
     const nBar = (P.NOUL_BAR !== undefined ? P.NOUL_BAR : 0.45);
     const xBar = X(mBar), yBar = Y(nBar);
@@ -550,7 +649,9 @@
     const mx = Math.max(0.5, Math.max.apply(null, rows.map(r => Math.abs(r.net_eur)).concat([0.5])));
     $("exits-body").innerHTML =
       rows.map(r => abar(r.cat, r.net_eur, mx, sgn(r.net_eur) + sym + " ·" + r.n + "×", r.net_eur >= 0 ? "g" : "r")).join("") +
-      '<div class="dim" style="margin-top:5px">NO HUMAN CLICKS SELL. TP/SL LIVE AS OCO ORDERS ON THE EXCHANGE; THE HWM TRAILING STOP RE-ARMS ITSELF (move_order_stop). IF THIS SERVER DIES MID-TRADE, THE EXCHANGE STILL CLOSES THE POSITION.</div>';
+      '<div class="dim" style="margin-top:5px">' + (((D.perp || {}).strategy) === "news"
+        ? "NO HUMAN CLICKS SELL. THE ENGINE MANAGES TP/SL ITSELF (fractional orders cannot carry server-side brackets): IT POLLS EVERY 5M AND EXITS AT THE TARGET, THE STOP OR THE 48H TIME LIMIT. EXITS DEFER TO THE NEXT OPEN WHEN THE MARKET IS CLOSED."
+        : "NO HUMAN CLICKS SELL. TP/SL LIVE AS OCO ORDERS ON THE EXCHANGE; THE HWM TRAILING STOP RE-ARMS ITSELF (move_order_stop). IF THIS SERVER DIES MID-TRADE, THE EXCHANGE STILL CLOSES THE POSITION.") + "</div>";
   }
 
   /* ---------- hours ---------- */
@@ -574,15 +675,17 @@
       rows.map(r => abar(r.inst.replace("-EUR", "").replace("-USD_UM_XPERP", "").replace(/-\d{6}$/, ""), r.net_eur, mx,
         sgn(r.net_eur) + sym + " ·" + r.trades + "× " + Math.round(100 * r.wins / r.trades) + "%W",
         r.net_eur >= 0 ? "g" : "r")).join("") +
-      '<div class="dim" style="margin-top:4px">THE UNIVERSE IS DYNAMIC — THE ENGINE TRADES WHATEVER PASSES LIQUIDITY, MOMENTUM AND DEPTH THIS WEEK, NOT A FIXED LIST.</div>';
+      '<div class="dim" style="margin-top:4px">' + (((D.perp || {}).strategy) === "news"
+        ? "THE UNIVERSE IS A FIXED " + ((D.perp || {}).universe || []).length + "-NAME US-STOCK LIST PARSED FROM THE ENGINE SOURCE — FRESH NEWS, NOT LIQUIDITY RANKING, PICKS THE CANDIDATES."
+        : "THE UNIVERSE IS DYNAMIC — THE ENGINE TRADES WHATEVER PASSES LIQUIDITY, MOMENTUM AND DEPTH THIS WEEK, NOT A FIXED LIST.") + "</div>";
   }
 
   /* ---------- universe ---------- */
   function renderUniverse(D) {
-    // LIVE book first (the heading reads "LIVE X-PERPS + RETIRED SPOT"), then the
-    // retired spot scan as a historical record. D.universe now holds the LIVE
-    // book's scan, so the spot table must read retired_spot.universe — otherwise
-    // this panel would print the perp scan under a "SPOT EUR" heading.
+    // LIVE book first, then the retired spot scan as a historical record.
+    // D.universe now holds the LIVE book's scan, so the spot table must read
+    // retired_spot.universe — otherwise this panel would print the live scan
+    // under a "SPOT EUR" heading.
     const retired = spotRetired(D);
     const u = (retired ? ((D.retired_spot || {}).universe || {}) : (D.universe || {}));
     const sel = u.selected || [];
@@ -604,16 +707,47 @@
       (u.n_eur_pairs || "?") + " EUR PAIRS → LIQUIDITY+RANGE+DEPTH FILTER → " + (u.n_candidates || "?") +
       ' CANDIDATES → MOMENTUM GATES → TOP ' + sel.length + " TO THE MODEL · BRACKETS PRICED AT 4× ALL-IN COST PER PAIR</div>" +
       "<table><tr><th>PAIR</th><th>DAY RNG</th><th>24H</th><th>VOL24</th><th>SPREAD</th><th>TOP5 DEPTH</th><th>TP</th><th>SL</th><th>TRAIL ARM/GB</th></tr>" + rows + "</table>";
-    $("universe-body").innerHTML = retired
-      ? (perpUniverseHtml(D) + spotHtml)
-      : (spotHtml + perpUniverseHtml(D));
+    const isNewsLive = ((D.perp || {}).strategy) === "news";
+    $("universe-body").innerHTML = isNewsLive
+      ? stocksUniverseHtml(D)
+      : (retired
+        ? (stocksUniverseHtml(D) + spotHtml)
+        : (spotHtml + stocksUniverseHtml(D)));
   }
 
-  function perpUniverseHtml(D) {
+  function stocksUniverseHtml(D) {
+    const P = D.perp || {};
+    const isNews = P.strategy === "news";
+    if (!isNews) return perpUniverseHtmlLegacy(D);
+    const uni = P.universe || [];
+    const sel = P.universe_selected || [];
+    const lm = P.last_mom || {};
+    const scanIso = P.universe_scanned_iso || lm.ts;
+    let html = '<div class="perp-h">LIVE BOOK · ALPACA US STOCKS (LONG-ONLY · NEWS-DRIVEN)</div>';
+    html += '<div class="dim" style="margin-bottom:4px">SCAN ' + esc(mmdd_hhmm(scanIso)) +
+      " UTC · " + uni.length + " STOCKS · " + (lm.n_fresh_headlines === undefined ? "?" : lm.n_fresh_headlines) +
+      " FRESH HEADLINES → " + (lm.n_ranked || 0) + " CANDIDATES → TOP " + sel.length +
+      " TO HALOGEN · CANDIDATES: " + (sel.length ? esc(sel.join(", ")) : "none this scan") + "</div>";
+    // day movers from the latest scan (the engine's own price context)
+    const movers = (lm.top || []).concat(lm.bottom || []);
+    const seen = {};
+    const rows = movers.filter(m => { const k = m[0]; if (seen[k]) return false; seen[k] = 1; return true; })
+      .sort((a, b) => b[1] - a[1])
+      .map(m => "<tr><td class='sym'>" + esc(m[0]) + "</td><td class='" + cls(m[1]) + "'>" + sgn(m[1]) + "%</td><td class='dim'>" +
+        (sel.indexOf(m[0]) >= 0 ? "CANDIDATE" : "—") + "</td></tr>").join("");
+    html += "<table><tr><th>SYMBOL</th><th>DAY MOVE</th><th>NEWS SCAN</th></tr>" + rows + "</table>";
+    html += '<div class="dim" style="margin-top:4px;font-size:10px">FULL UNIVERSE: ' +
+      uni.map(s => esc(s)).join(" · ") + "</div>";
+    return html;
+  }
+
+  // Retired OKX X-Perp universe shape — kept only so frozen OKX-era data (if
+  // ever pointed at again) renders honestly instead of breaking.
+  function perpUniverseHtmlLegacy(D) {
     const P = D.perp || {};
     const sel = P.universe_selected || [];
     const scanIso = P.universe_scanned_iso;
-    let html = '<div class="perp-h"' + (spotRetired(D) ? '' : ' style="margin-top:10px"') + '>LIVE BOOK · X-PERPS USD (TWO-WAY: LONG + SHORT)</div>';
+    let html = '<div class="perp-h"' + (spotRetired(D) ? '' : ' style="margin-top:10px"') + '>RETIRED BOOK · OKX X-PERPS USD (TWO-WAY)</div>';
     if (!sel.length) {
       html += '<div class="dim">SCAN ' + esc(mmdd_hhmm(scanIso)) + ' UTC · ' +
         (P.universe || []).length + ' CONTRACTS SELECTED (detail pending next scan)</div>';
@@ -653,12 +787,13 @@
         $("pos-body").innerHTML = '<div class="dim">' + esc(sb.status || "RETIRED") +
           (sb.version ? ' · ENGINE ' + esc(sb.version) : '') +
           ' — the long-only EUR spot book no longer trades. Its collateral was converted to ' +
-          'USDC and moved to the live X-Perp book (see above). ' +
+          'USDC and moved to the OKX X-Perp book, which itself RETIRED 2026-11-19 when the venue ' +
+          'moved to Alpaca US stocks (operator directive). ' +
           (sb.trades_closed ? 'FINAL RECORD: ' + fmt(sb.trades_closed, 0) + ' CLOSED TRADES · ' +
             sgn(sb.net_eur) + ' EUR (' + sgn(sb.net_pct) + '% of launch capital) · PF ' + fmt(sb.profit_factor, 2) +
             ' · WIN RATE ' + fmt(sb.win_rate_pct, 1) + '% · FEES ' + eur(sb.fees_eur) + '. ' : '') +
-          'The ledger and replay panels below stream the LIVE X-Perp book, not this one; ' +
-          'the panels marked RETIRED carry its final numbers.</div>';
+          'The ledger and replay panels below stream the LIVE Alpaca stocks book, not this one; ' +
+          'the panels marked RETIRED carry the final numbers of both OKX books.</div>';
         return;
       }
       $("pos-body").innerHTML = '<div class="dim">FLAT — NO OPEN POSITIONS. ENGINE HOLDS CASH IN EUR, SCANS EVERY ' +
@@ -685,13 +820,116 @@
     $("pos-body").innerHTML = "<table><tr><th>PAIR</th><th>STAKE</th><th>ENTRY</th><th>LAST</th><th>UPNL%</th><th>UPNL €</th><th>HWM</th><th>TP%</th><th>SL%</th><th>TRAIL A/GB</th><th>AGE</th><th>PROTECTION</th></tr>" + rows + "</table>";
   }
 
-  /* ---------- v4: X-Perps two-way book ---------- */
+  /* ---------- live book panel (Alpaca US stocks since 2026-11-19) ---------- */
   function renderPerp(D) {
     const P = D.perp;
     const panel = document.getElementById("p-perp");
     if (!panel) return;
     if (!P) { panel.style.display = "none"; return; }
     panel.style.display = "";
+    if (P.strategy === "news") { renderStocksBook(D); return; }
+    renderPerpLegacy(D);
+  }
+
+  function renderStocksBook(D) {
+    const P = D.perp || {};
+    const s = P.stats || {};
+    const j = P.last_jev || {};
+    const jChoice = (j.choice || "—");
+    const jBuy = /^buy_/.test(jChoice);
+    const jCls = jBuy ? "pos" : "dim";
+    const mkt = P.market_open === false ? " · MARKET CLOSED" : "";
+    let html = '<div class="perp-grid">';
+    // --- KPI strip ---
+    html += '<div class="perp-kpis">' +
+      '<div class="pk"><span class="pkl">EQUITY</span><span class="pkv w">$' + fmt(P.usdc_equity) + '</span><span class="pks">USD cash · no leverage</span></div>' +
+      '<div class="pk"><span class="pkl">REALIZED</span><span class="pkv ' + cls(s.net_all_pct) + '">' + sgn(s.net_all_pct) + '%</span><span class="pks">' + (s.trades_all || 0) + ' closed' + (s.capital_usd ? '' : ' · capital base pending cutover') + '</span></div>' +
+      '<div class="pk"><span class="pkl">WIN RATE</span><span class="pkv w">' + fmt(s.win_rate_pct, 0) + '%</span><span class="pks">' + (s.longs || 0) + ' long trades</span></div>' +
+      '<div class="pk"><span class="pkl">LAST CALL</span><span class="pkv ' + jCls + '">' + (jBuy ? "BUY " + esc(jChoice.replace(/^buy_/, "").toUpperCase()) : "FLAT") + '</span><span class="pks">conf ' + fmt(j.conf) + (j.impact ? ' · impact ' + esc(j.impact) : '') + '</span></div>' +
+      '<div class="pk"><span class="pkl">STATUS</span><span class="pkv ' + (P.halted ? "neg" : (P.dry ? "am" : "pos")) + '">' + (P.halted ? "HALTED" : (P.breaked ? "BREAKER" : (P.dry ? "DRY RUN" : "LIVE"))) + '</span><span class="pks">long-only · 5m cycle' + mkt + '</span></div>' +
+      '</div>';
+    // --- halogen news call ---
+    if (j.ts) {
+      const dirLbl = jBuy ? "▲ BUY" : "— NO-TRADE";
+      const dirCls = jBuy ? "long-tag" : "dim";
+      html += '<div class="perp-sec"><div class="perp-h">HALOGEN NEWS CALL · ' + esc(mmdd_hhmm(j.ts)) + ' UTC</div>';
+      html += '<div class="perp-decision">DECISION <span class="' + dirCls + '" style="font-size:13px">' + dirLbl + '</span> ' +
+        esc(j.chosen_inst || "") +
+        ' <span class="dim">· conf ' + fmt(j.conf) + (j.impact ? ' · impact ' + esc(j.impact) : '') +
+        (j.day_chg_pct !== undefined && j.day_chg_pct !== null ? ' · day ' + sgn(j.day_chg_pct) + '%' : '') +
+        ' · budget $' + fmt(j.budget_usd) + ' · ' + ((j.tokens || {}).in || "?") + '/' + ((j.tokens || {}).out || "?") + ' tok</span></div>';
+      if (j.headline) {
+        html += '<div class="news-item" style="margin-top:5px"><span class="src">[HEADLINE]</span>' + esc(j.headline) + '</div>';
+      }
+      if (j.rationale) {
+        html += '<div class="dim" style="font-size:10px;margin-top:3px">MODEL RATIONALE: ' + esc(j.rationale) + '</div>';
+      }
+      // confidence bar vs the engine's parsed floor
+      const cf = ((j.criteria || {}).conf_floor !== undefined) ? j.criteria.conf_floor : (D.params || {}).CONF_FLOOR;
+      if (j.conf !== undefined && j.conf !== null) {
+        html += '<div class="twoway"><div class="tw-row' + (jBuy ? " chosen" : "") + '">' +
+          '<div class="tw-name">' + esc((j.chosen_inst || jChoice.replace(/^buy_/, "")).toUpperCase()) + '</div>' +
+          '<div class="tw-bar"><span class="tw-long" style="width:' + (Math.max(0, Math.min(1, j.conf)) * 100).toFixed(1) + '%"></span>' +
+          '<span class="tw-no" style="width:' + (Math.max(0, 1 - j.conf) * 100).toFixed(1) + '%"></span></div>' +
+          '<div class="tw-nums"><span class="long-tag">' + (j.conf * 100).toFixed(0) + '% CONF</span></div>' +
+          '<div class="tw-noul">floor ' + fmt(cf, 2) + '</div></div></div>';
+        html += '<div class="dim" style="font-size:9px;margin-top:3px">BAR = HALOGEN CONFIDENCE (green) vs REMAINING DOUBT (grey) · the code gate fires only at conf ≥ floor AND impact ≥ medium · long-only — bad news is not tradable here</div>';
+      }
+      html += '</div>';
+    }
+    // --- open positions ---
+    const ps = P.positions || [];
+    html += '<div class="perp-sec"><div class="perp-h">OPEN POSITIONS</div>';
+    if (!ps.length) {
+      html += '<div class="dim perp-flat">FLAT — SCANNING ' + (P.universe || []).length + ' US STOCKS FOR FRESH NEWS CATALYSTS EVERY CYCLE. COMMISSION-FREE · REGULAR HOURS ONLY (09:30–16:00 ET) · FLAT IS A POSITION.</div>';
+    } else {
+      html += "<table><tr><th>SIDE</th><th>SYMBOL</th><th>ENTRY</th><th>LAST</th><th>UPNL%</th><th>NOTIONAL</th><th>TP%</th><th>SL%</th><th>OPENED</th><th>PROTECTION</th></tr>";
+      html += ps.map(p => {
+        const b = p.bracket || {};
+        return "<tr class='row-long'>" +
+          "<td><span class='long-tag'>▲ LONG</span></td>" +
+          "<td class='sym'>" + esc(p.inst || "") + "</td>" +
+          "<td>" + fmt(p.entry_ref, 2) + "</td>" +
+          "<td>" + fmt(p.last, 2) + "</td>" +
+          "<td class='" + cls(p.upc) + "'>" + sgn(p.upc) + "%</td>" +
+          "<td>$" + fmt(p.notional_usd) + "</td>" +
+          "<td class='cy'>+" + fmt(b.tp_pct, 2) + "</td><td class='neg'>−" + fmt(b.sl_pct, 2) + "</td>" +
+          "<td>" + (p.opened_ts ? esc(mmdd_hhmm(p.opened_ts)).slice(6) : "—") + "</td>" +
+          "<td><span class='am'>ENGINE TP/SL</span></td></tr>" +
+          (p.news_headline ? "<tr><td colspan='10' style='text-align:left;padding-left:12px'><span class='dim'>CATALYST: " + esc(p.news_headline) +
+            (p.jev_conf !== undefined && p.jev_conf !== null ? " · conf " + fmt(p.jev_conf, 2) : "") +
+            " · qty " + fmt(p.contracts, 4) + " shares</span></td></tr>" : "");
+      }).join("") + "</table>";
+    }
+    html += '</div>';
+    // --- recent closed ---
+    const tr = P.trades || [];
+    html += '<div class="perp-sec"><div class="perp-h">RECENT CLOSED</div>';
+    if (!tr.length) html += '<div class="dim">AWAITING FIRST CLOSED STOCK TRADE…</div>';
+    else html += "<table><tr><th>SIDE</th><th>SYMBOL</th><th>MOVE</th><th>NET%</th><th>REASON</th><th>CLOSED</th></tr>" +
+      tr.slice(0, 8).map(t =>
+        "<tr class='row-long'><td><span class='long-tag'>▲ LONG</span></td>" +
+        "<td class='sym'>" + esc(t.inst || "") + "</td>" +
+        "<td class='" + cls(t.upc) + "'>" + sgn(t.upc) + "%</td>" +
+        "<td class='" + cls(t.net_pct) + "'>" + sgn(t.net_pct) + "%</td>" +
+        "<td class='dim'>" + esc((t.reason || "").slice(0, 30)) + "</td>" +
+        "<td class='dim'>" + esc(mmdd_hhmm(t.close_ts)) + "</td></tr>").join("") + "</table>";
+    html += '</div>';
+    // --- universe strip ---
+    html += '<div class="perp-sec"><div class="perp-h">SCANNED UNIVERSE</div><div class="dim" style="font-size:10px">' +
+      (P.universe || []).map(u => esc(u)).join(" · ") +
+      '</div></div>';
+    html += '</div>';
+    $("perp-body").innerHTML = html;
+    const mEl = $("perp-meta");
+    if (mEl) mEl.textContent = "Alpaca US equities · $" + fmt(P.usdc_equity) + " USD · long-only · commission-free · regular hours 09:30–16:00 ET";
+    const h2 = document.querySelector("#p-perp h2");
+    if (h2 && h2.firstChild) h2.firstChild.textContent = "US STOCKS — THE LIVE BOOK (LONG-ONLY, USD) ";
+  }
+
+  /* ---------- retired OKX X-Perps panel (legacy shape, frozen history) ---------- */
+  function renderPerpLegacy(D) {
+    const P = D.perp;
     const s = P.stats || {};
     const sideTag = (side) => side === "short"
       ? '<span class="short-tag">▼ SHORT</span>'
@@ -792,28 +1030,41 @@
 
   /* ---------- news ---------- */
   function renderNews(D) {
+    const isNews = ((D.perp || {}).strategy) === "news";
     const items = (D.news || []).map(n => {
-      const m = n.match(/^\[(.+?)\]\s*(.*)$/);
+      if (n && typeof n === "object") {
+        // stocks era: {ts, headline, symbols, source, url} from stocks_news.json
+        const syms = (n.symbols || []).join(" ");
+        const age = ageMin(n.ts);
+        return '<div class="news-item"><span class="src">[' + esc(String(n.source || "wire").toUpperCase()) + ']</span>' +
+          esc(n.headline) +
+          (syms ? ' <span class="am">' + esc(syms) + '</span>' : '') +
+          (age !== null ? ' <span class="dim">· ' + age + 'm ago</span>' : '') + '</div>';
+      }
+      const m = String(n).match(/^\[(.+?)\]\s*(.*)$/);
       const src = m ? m[1] : "wire";
       const txt = m ? m[2] : n;
       return '<div class="news-item"><span class="src">[' + esc(src.toUpperCase()) + "]</span>" + esc(txt) + "</div>";
     }).join("");
-    // HONESTY: say exactly what the LIVE engine injects. v7.0 halogen LLM book:
-    // RSS catalysts ride with every decision (30-min guard). Deterministic fade
-    // book: observer-only. Retired spot: its own frozen prompts.
+    // HONESTY: say exactly what the LIVE engine injects. Stocks era: fresh
+    // headlines ARE the signal. Retired OKX shapes keep their historical notes.
     const staleMin = ageMin(D.news_updated);
     const isMom = ((D.perp || {}).strategy) === "momentum";
-    const feedNote = !spotRetired(D)
-      ? "RIDES WITH EVERY MODEL CALL — 30-MIN GUARD"
-      : isMom
-        ? "OBSERVER CONTEXT — NOT INJECTED INTO THE LIVE BOOK. The deterministic fade engine decides on 48h returns alone."
-        : "INJECTED INTO THE LIVE MODEL STATE — RSS catalysts refresh on a 30-min guard and ride with every halogen decision.";
-    $("news-age").textContent = "INGESTED " + esc(mmdd_hhmm(D.news_updated)) + " UTC" +
+    const feedNote = isNews
+      ? "THE LIVE SIGNAL — fresh Alpaca News API headlines (≤" + fmt((D.params || {}).NEWS_WINDOW_MIN, 0) + "m) drive every halogen decision. The engine writes this file each scan."
+      : !spotRetired(D)
+        ? "RIDES WITH EVERY MODEL CALL — 30-MIN GUARD"
+        : isMom
+          ? "OBSERVER CONTEXT — NOT INJECTED INTO THE LIVE BOOK. The deterministic fade engine decides on 48h returns alone."
+          : "INJECTED INTO THE LIVE MODEL STATE — RSS catalysts refresh on a 30-min guard and ride with every halogen decision.";
+    $("news-age").textContent = D.news_updated ? ("INGESTED " + esc(mmdd_hhmm(D.news_updated)) + " UTC" +
       (staleMin !== null ? " · " + staleMin + "M AGO" : "") +
-      (staleMin !== null && staleMin > 45 ? " · ⚠ FEED STALE" : "");
-    let html = items || '<div class="dim">NO FRESH CATALYSTS IN WINDOW</div>';
+      (staleMin !== null && staleMin > 45 ? " · ⚠ FEED STALE" : "")) : "";
+    let html = items || '<div class="dim">' + (isNews ? "NO FRESH HEADLINES IN WINDOW — THE ENGINE STANDS ASIDE (NEWS IS THE SIGNAL; NO NEWS, NO TRADE)" : "NO FRESH CATALYSTS IN WINDOW") + '</div>';
     html += '<div class="dim" style="margin-top:4px">' + feedNote + '</div>';
     $("news-body").innerHTML = html;
+    const tag = $("news-tag");
+    if (tag && isNews) tag.textContent = "LIVE SIGNAL — ALPACA NEWS API (FRESH HEADLINES)";
   }
 
   /* ---------- sentiment ---------- */
@@ -826,6 +1077,16 @@
   }
   function renderSent(D) {
     const s = D.sentiment || {};
+    // Stocks era: crypto sentiment retired with the OKX venue. Show the honest
+    // notice instead of stale polls or an empty table pretending to be live.
+    if (!s.fear_greed && !Object.keys(s.coins || {}).length) {
+      $("sent-body").innerHTML =
+        '<div class="dim" style="line-height:1.55">' + esc(s.retired_note ||
+          "Crypto sentiment feeds retired with the OKX venue (2026-11-19). The live book's context is stock-news headlines — see the NEWS panel.") + '</div>';
+      const tag = $("sent-tag");
+      if (tag) tag.textContent = "RETIRED WITH THE OKX VENUE — 2026-11-19";
+      return;
+    }
     const coins = s.coins || {};
     const rows = Object.keys(coins).map(k => {
       const c = coins[k];
@@ -854,15 +1115,17 @@
   /* ---------- macro ---------- */
   function renderMacro(D) {
     const m = D.macro || {};
-    // The live X-Perp engine does NOT inject econ-calendar events — only the
-    // retired spot engine did. Saying "NO FRESH ENTRIES INTO IMP-3 RELEASES"
-    // would describe a protection the live book does not have. State the source.
-    if (m.source === "not-injected-into-live-book") {
+    // Source-honest publishing: the stocks news book decides on company
+    // headlines and injects no econ calendar; the retired OKX books' macro
+    // context is history. Never imply a protection the live book lacks.
+    if (m.source === "alpaca-news-headlines" || m.source === "not-injected-into-live-book") {
       $("macro-body").innerHTML =
-        '<div class="dim" style="line-height:1.55">NOT WIRED INTO THE LIVE BOOK.<br><br>' +
-        esc(m.note || "The live X-Perp engine injects funding + multi-timeframe momentum only.") +
-        '<br><br>The retired spot engine did gate entries around high-impact releases; ' +
+        '<div class="dim" style="line-height:1.55">NO ECON CALENDAR IN THE LIVE BOOK.<br><br>' +
+        esc(m.note || "The live book decides on fresh company headlines (Alpaca News API).") +
+        '<br><br>The retired OKX spot engine did gate entries around high-impact releases; ' +
         "that protection went with it. Nothing here is stale data being passed off as current.</div>";
+      const tag = $("macro-tag");
+      if (tag) tag.textContent = "NOT INJECTED — LIVE BOOK DECIDES ON COMPANY NEWS";
       return;
     }
     const up = (m.upcoming || []).map(e =>
@@ -878,10 +1141,31 @@
       (sup ? "<table><tr><th>EVENT</th><th>ACT</th><th>FC</th><th>AGE</th></tr>" + sup + "</table>" : '<div class="dim">NO SURPRISE PRINTS IN WINDOW</div>');
   }
 
-  /* ---------- jev vote tape ---------- */
+  /* ---------- decision vote tape ---------- */
   function renderHist(D) {
     const h = D.jev_history || [];
     const P = D.params || {};
+    const isNews = ((D.perp || {}).strategy) === "news";
+    if (isNews) {
+      const cf = (P.CONF_FLOOR !== undefined ? P.CONF_FLOOR : 0.60);
+      const rows = h.map(j => {
+        const fired = j.choice && j.choice !== "no_trade";
+        const label = fired ? String(j.choice).replace(/^(buy|long|short)_/, "").toUpperCase() : "FLAT";
+        const cw = Math.min(64, Math.max(2, (j.conf || 0) * 64));
+        return "<tr><td class='dim'>" + esc(mmdd_hhmm(j.ts)) + "</td>" +
+          "<td class='" + (fired ? "pos" : "dim") + "'>" + (fired ? "▲ " : "") + esc(label) + "</td>" +
+          "<td>" + fmt(j.conf, 2) + "</td>" +
+          "<td><div style='display:flex;align-items:center;gap:4px;justify-content:flex-end'>" +
+          "<div style='height:8px;width:" + cw.toFixed(0) + "px;background:" + (fired ? "var(--green-dim)" : "#333") + "'></div>" +
+          "<span class='" + (j.conf >= cf ? "am" : "dim") + "' style='width:38px;text-align:right'>" + fmt(j.conf, 2) + "</span></div></td>" +
+          "<td class='dim'>" + esc(j.impact || "—") + "</td>" +
+          "<td class='dim'>" + (j.tok || "?") + "</td></tr>";
+      }).join("");
+      $("hist-body").innerHTML = h.length
+        ? ("<table><tr><th>UTC</th><th>VOTE</th><th>CONF</th><th>CONF vs FLOOR " + fmt(cf, 2) + "</th><th>IMPACT</th><th>TOK</th></tr>" + rows + "</table>")
+        : '<div class="dim">NO MODEL CALLS YET — HALOGEN IS ASKED ONLY WHEN A FRESH HEADLINE CLEARS THE DETERMINISTIC PRE-GATES. QUIET TAPE = NO CALLS, BY DESIGN.</div>';
+      return;
+    }
     const mBar = (P.MARGIN_BAR !== undefined ? P.MARGIN_BAR : 0.30);
     const nBar = (P.NOUL_BAR !== undefined ? P.NOUL_BAR : 0.45);
     const rows = h.map(j => {
@@ -905,7 +1189,8 @@
   /* ---------- trades ledger (clickable → dossier) ---------- */
   function renderTrades(D) {
     const sym = liveCcy(D) === "USD" ? "$" : "€";
-    const twoWay = spotRetired(D);   // live book is the two-way perp book
+    const twoWay = spotRetired(D) && ((D.perp || {}).strategy !== "news");
+    const isNews = ((D.perp || {}).strategy) === "news";
     const rows = (D.trades || []).map(t => {
       // direction tag: only meaningful for the two-way perp book
       const sd = (t.side === "short") ? " <span class='short-tag'>▼</span>"
@@ -923,7 +1208,9 @@
       "<td class='dim' style='text-align:left'>" + esc(t.reason) + "</td>" +
       "<td class='cy' style='font-size:9px'>REPLAY ▸</td></tr>";
     }).join("");
-    $("trades-body").innerHTML = "<table><tr><th>CLOSED UTC</th><th>PAIR</th><th>" + (twoWay ? "NOTIONAL" : "STAKE") + "</th><th>MOVE</th><th>NET " + sym + "</th><th>FEES</th><th>HELD</th><th>EXIT</th><th></th></tr>" + rows +
+    $("trades-body").innerHTML = ((D.trades || []).length ? "" :
+      '<div class="dim" style="margin-bottom:4px">NO CLOSED TRADES YET — THE LEDGER STARTS WITH THE FIRST FILL. EVERY ROW WILL LINK TO A FULL DECISION REPLAY.</div>') +
+      "<table><tr><th>CLOSED UTC</th><th>" + (isNews ? "SYMBOL" : "PAIR") + "</th><th>" + (twoWay || isNews ? "NOTIONAL" : "STAKE") + "</th><th>MOVE</th><th>NET " + sym + "</th><th>FEES</th><th>HELD</th><th>EXIT</th><th></th></tr>" + rows +
       "</table><div class='dim' style='margin-top:3px;font-size:9.5px'>▸ CLICK ANY ROW — FULL DECISION REPLAY: THE EXACT STATE THE MODEL SAW, ITS VOTE, THE GATES, EVERY EVENT ENTRY→EXIT, PLUS AN LLM POST-MORTEM · <span style='color:var(--cyan)'>◈LLM</span> = DEBRIEF READY (HOVER)</div>";
     document.querySelectorAll(".trade-row").forEach(tr => {
       tr.onclick = () => openDossier(tr.getAttribute("data-tid"));
@@ -959,11 +1246,14 @@
       '<div class="sc-model">' + esc(model) + '</div>' +
       '<div class="sc-kind">' + esc(kind) + '</div>' +
       '<div class="sc-lines">' + lines.map(l => '<div>▸ ' + esc(l) + "</div>").join("") + "</div></div>";
+    const isNews = ((D.perp || {}).strategy) === "news";
     $("stack-body").innerHTML =
       card("DECISION ENGINE", "halogen-qwen3.8-flash-next", "SELF-HOSTED · TYPED JSON · SCHEMA-CHECKED", [
-        spotRetired(D)
-          ? "Returns probabilities, not prose — p(long) AND p(short) per contract, rise/fall-prob, confidence"
-          : "Returns probabilities, not prose — p(buy) per pair, noul rise-prob, confidence",
+        isNews
+          ? "Reads ONE fresh news headline + price context → typed JSON: action buy/no_trade, confidence, impact, target/stop, horizon, rationale"
+          : spotRetired(D)
+            ? "Returns probabilities, not prose — p(long) AND p(short) per contract, rise/fall-prob, confidence"
+            : "Returns probabilities, not prose — p(buy) per pair, noul rise-prob, confidence",
         "Schema-checked JSON; invalid or failed output fails closed to no_trade",
         (f.jev_calls || 0) + " calls · avg " + (f.avg_input_tok || "?") + " tok in / " + (f.avg_output_tok || "?") + " out",
         "Runs on our own hardware via chat.obekt.com — $0 marginal per decision",
@@ -974,7 +1264,9 @@
         "Hash-cached, ≥5-min rate limit, graceful fallback if the relay drops",
         "Runs on YOUR relay — a local model or a cheap hosted endpoint, not a big-cloud API",
       ], "#00e04b") +
-      '<div class="dim" style="margin-top:6px;font-size:10px">ONE SELF-HOSTED MODEL, TWO JOBS: HALOGEN <b style="color:var(--cyan)">DECIDES</b> (typed JSON, schema-checked, auditable) AND <b style="color:var(--green)">EXPLAINS</b> (desk note + post-mortems). No external decision API — the whole loop runs on our own hardware.</div>';
+      '<div class="dim" style="margin-top:6px;font-size:10px">' + (isNews
+        ? "ONE SELF-HOSTED MODEL, TWO JOBS: HALOGEN <b style='color:var(--cyan)'>DECIDES</b> on fresh stock-news headlines (typed JSON, schema-checked, fails closed) AND <b style='color:var(--green)'>EXPLAINS</b> (desk note + post-mortems). Deterministic code gates own all risk — the LLM never sizes or overrides a gate."
+        : "ONE SELF-HOSTED MODEL, TWO JOBS: HALOGEN <b style='color:var(--cyan)'>DECIDES</b> (typed JSON, schema-checked, auditable) AND <b style='color:var(--green)'>EXPLAINS</b> (desk note + post-mortems). No external decision API — the whole loop runs on our own hardware.") + "</div>";
   }
 
   /* ---------- prompt / cost optimization ---------- */
@@ -988,6 +1280,13 @@
     // MACRO") described code that is not running. Report what is real.
     const hasBudget = !!P.has_prompt_budget;
     const budget = P.MAX_JEV_INPUT_TOKENS || null;
+    const isNews = ((D.perp || {}).strategy) === "news";
+    const smallPromptNote = isNews
+      ? "THE LIVE NEWS PROMPT IS SMALL BY CONSTRUCTION — ONE HEADLINE + SUMMARY + PRICE CONTEXT PER CALL, AT MOST " + (P.MAX_LLM_CALLS || 4) + " CALLS PER CYCLE — SO IT NEEDS NO TRIM LOOP. NOTHING IS CAPPED BECAUSE NOTHING COMES CLOSE."
+      : "THE PROMPT IS SMALL BY CONSTRUCTION — AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS WITH A HANDFUL OF NUMBERS EACH, AND NO NEWS/MACRO BLOCKS — SO IT NEEDS NO TRIM LOOP. NOTHING IS CAPPED BECAUSE NOTHING COMES CLOSE.";
+    const boundedNote = isNews
+      ? "COST IS BOUNDED BY THE CALL CAP, NOT BY A TRIMMER: THE ENGINE MAKES AT MOST " + (P.MAX_LLM_CALLS || 4) + " HALOGEN CALLS PER CYCLE, EACH ON ONE HEADLINE, SO INPUT SIZE CANNOT GROW WITH THE UNIVERSE."
+      : "COST IS BOUNDED BY THE CANDIDATE CAP, NOT BY A TRIMMER: THE ENGINE SENDS AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS PER CALL, SO INPUT SIZE CANNOT GROW WITH THE UNIVERSE.";
     const avgIn = f.avg_input_tok || 0;
     const pct = (hasBudget && budget) ? Math.min(100, Math.round(100 * avgIn / budget)) : 0;
     const row = (name, val, note) =>
@@ -1001,7 +1300,7 @@
     $("optim-body").innerHTML =
       '<div class="dim" style="font-size:10px;margin-bottom:6px">' + (hasBudget
         ? "EVERY DECISION PROMPT IS BUDGETED & TRIMMED IN CODE. THE ENGINE MEASURES ~" + fmt(P.CHARS_PER_TOKEN, 2) + " CHARS/TOKEN AND HARD-CAPS INPUT SO THE MODEL STAYS FAST AND CHEAP."
-        : "THE LIVE X-PERP PROMPT IS SMALL BY CONSTRUCTION — AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS WITH A HANDFUL OF NUMBERS EACH, AND NO NEWS/MACRO BLOCKS — SO IT NEEDS NO TRIM LOOP. NOTHING IS CAPPED BECAUSE NOTHING COMES CLOSE.") + "</div>" +
+        : smallPromptNote) + "</div>" +
       gauge +
       row("AVG INPUT / CALL", avgIn + " tok", "measured across " + (f.jev_calls || 0) + " live calls") +
       row("PEAK INPUT / CALL", (f.max_input_tok || "—") + " tok", "worst-case state size") +
@@ -1012,13 +1311,14 @@
         : row("BUDGET TRIMS", "n/a", "no trim loop in this engine — see note above")) +
       '<div class="dim" style="margin-top:6px;font-size:10px">' + (hasBudget
         ? "TRIM PRIORITY IS HAND-TUNED: NEWS SHRINKS BEFORE MACRO, MACRO BEFORE THE PAIR TABLE. THE MODEL ALWAYS SEES THE NUMBERS THAT MOVE THE DECISION FIRST."
-        : "COST IS BOUNDED BY THE CANDIDATE CAP, NOT BY A TRIMMER: THE ENGINE SENDS AT MOST " + (P.MAX_JEV_PAIRS || 4) + " CONTRACTS PER CALL, SO INPUT SIZE CANNOT GROW WITH THE UNIVERSE.") + "</div>";
+        : boundedNote) + "</div>";
   }
 
   /* ---------- decision economics ---------- */
   function renderCostLive(D) {
     const f = D.funnel || {}, s = D.stats || {};
     const sym = liveCcy(D) === "USD" ? "$" : "€";
+    const isNews = ((D.perp || {}).strategy) === "news";
     const opens = f.opens || 0, calls = f.jev_calls || 0;
     const usdAll = f.usd_all || 0;
     const legacyCalls = f.legacy_calls_all || 0;
@@ -1034,12 +1334,16 @@
       big("LEGACY $ / JEV DECISION", "$" + perDecision.toFixed(6), (legacyCalls || 0) + " TypeSafe-era calls", "g") +
       big("LEGACY $ / TRADE OPENED", "$" + perTrade.toFixed(4), "legacy spend / " + (opens || 0) + " opens", "g") +
       big("LEGACY MODEL SPEND", "$" + usdAll.toFixed(2), "TypeSafe era · halogen: $0 marginal", "g") +
-      big("EXCHANGE FEES PAID", sym + fees.toFixed(2), "the real cost of scalping", "r") +
+      big(isNews ? "REGULATORY FEES PAID" : "EXCHANGE FEES PAID", sym + fees.toFixed(2), isNews ? "sell-side SEC/TAF only · commission-free venue" : "the real cost of scalping", "r") +
       "</div>" +
       '<div class="dim" style="margin-top:7px;font-size:10.5px;line-height:1.5">' +
-      "THE WHOLE GAME IS FEES, NOT INFERENCE. THE RETIRED TYPE SAFE JEV ERA SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
-      "</b> ON DECISIONS; THE LIVE HALOGEN ENGINE IS SELF-HOSTED AT $0 MARGINAL COST. EXCHANGE FEES: <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
-      "</b>. A SCALPER'S EDGE LIVES OR DIES ON THE FEE LINE — WHICH IS WHY THE ENTRY IS MAKER-FIRST AND THE UNIVERSE IS FILTERED FOR TIGHT SPREADS. THE AI IS FREE; THE MARKET ACCESS IS NOT.</div>";
+      (isNews
+        ? "STOCKS ARE COMMISSION-FREE — THE ONLY TRADING COSTS ARE A TINY SELL-SIDE SEC/TAF REGULATORY FEE (~0.003% ON CLOSES) AND THE SPREAD. THE RETIRED TYPE SAFE JEV ERA (OKX) SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
+          "</b> ON DECISIONS; THE LIVE HALOGEN ENGINE IS SELF-HOSTED AT $0 MARGINAL COST. FEES TO DATE: <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
+          "</b>. WITH FEES NEAR ZERO, THE WHOLE GAME IS SIGNAL QUALITY: FRESH, HIGH-IMPACT NEWS THAT THE MARKET HASN'T PRICED IN — WHICH IS WHY THE CHASE GUARD EXISTS. THE AI IS FREE; THE EDGE IS THE HARD PART.</div>"
+        : "THE WHOLE GAME IS FEES, NOT INFERENCE. THE RETIRED TYPE SAFE JEV ERA SPENT <b style='color:var(--green)'>$" + usdAll.toFixed(2) +
+          "</b> ON DECISIONS; THE LIVE HALOGEN ENGINE IS SELF-HOSTED AT $0 MARGINAL COST. EXCHANGE FEES: <b style='color:var(--red)'>" + sym + fees.toFixed(2) +
+          "</b>. A SCALPER'S EDGE LIVES OR DIES ON THE FEE LINE — WHICH IS WHY THE ENTRY IS MAKER-FIRST AND THE UNIVERSE IS FILTERED FOR TIGHT SPREADS. THE AI IS FREE; THE MARKET ACCESS IS NOT.</div>");
   }
 
   /* ---------- architecture ---------- */
@@ -1051,13 +1355,28 @@
     // v3.8), "STAKE = ALL FREE EUR", cooldowns 15m/30m, stale exit 90m — while the
     // live book ran different values on every one. Parse, never transcribe.
     const p = D.params || {};
-    // The live book IS the perp book exactly when spot is retired. (An earlier
-    // version had this inverted — `!spotRetired(D)` — which rendered all eight
-    // architecture steps describing the retired spot engine while the perp engine
-    // was the one actually trading.)
+    // The live book IS the stocks book exactly when the venue changed (spot
+    // retired flag + news strategy). Every constant comes from D.params,
+    // parsed out of alpaca_stocks.py by generate.py — parse, never transcribe.
     const perps = spotRetired(D);
+    const isNews = ((D.perp || {}).strategy) === "news";
     const sym = perps ? "$" : "€";
-    const steps = [
+    const steps = isNews ? [
+      ["1", "SCAN", "ALPACA NEWS API EVERY CYCLE — FRESH HEADLINES ≤" + fmt(p.NEWS_WINDOW_MIN, 0) + "M ON A FIXED " +
+        (((D.perp || {}).universe || []).length || 30) + "-NAME US-STOCK UNIVERSE (PARSED FROM ENGINE SOURCE)"],
+      ["2", "FILTER", "ONE CANDIDATE PER SYMBOL · DEDUPED AGAINST SEEN HEADLINES · ONE ENTRY PER SYMBOL PER DAY"],
+      ["3", "GATES", "DETERMINISTIC PRE-GATES BEFORE ANY LLM CALL: SPREAD ≤" + fmt(p.MAX_SPREAD_PCT, 2) + "% · ASK-vs-LAST ≤" +
+        fmt(p.ASK_VS_LAST_PCT, 2) + "% · QUOTE ≤" + fmt(p.QUOTE_STALE_S, 0) + "S · CHASE ≤+" + fmt(p.CHASE_CAP_PCT, 1) +
+        "% DAY · KNIFE ≥" + fmt(p.KNIFE_FLOOR_PCT, 1) + "% — CODE, NOT OPINION"],
+      ["4", "CONTEXT", "ONE HEADLINE + SUMMARY + PRICE CONTEXT (LAST/BID/ASK/DAY MOVE/VOLUME) + EQUITY + LEG BUDGET — THE MODEL SEES EXACTLY THIS"],
+      ["5", "DECIDE", "HALOGEN RETURNS TYPED JSON: ACTION buy|no_trade · CONFIDENCE · IMPACT · TARGET/STOP % · HORIZON · RATIONALE — SCHEMA-ENFORCED, FAILS CLOSED TO no_trade"],
+      ["6", "VETO", "ENGINE BAR: CONF ≥" + fmt(p.CONF_FLOOR, 2) + " AND IMPACT ≠ LOW · MAX " + fmt(p.MAX_OPEN, 0) +
+        " OPEN SLOTS · BRACKET CLAMPED: TP " + fmt(p.TP_MIN, 1) + "–" + fmt(p.TP_MAX, 1) + "%, SL " + fmt(p.SL_MIN, 1) + "–" + fmt(p.SL_MAX, 1) + "%, TP ≥" + fmt(p.TP_SL_RATIO, 1) + "× SL"],
+      ["7", "EXECUTE", "MARKET ORDER, FRACTIONAL SHARES · ALL-IN: " + Math.round((p.MAX_NOTIONAL_FRAC || 0.98) * 100) +
+        "% OF USD EQUITY / " + fmt(p.MAX_OPEN, 0) + " SLOTS · REGULAR HOURS ONLY 09:30–16:00 ET · COMMISSION-FREE"],
+      ["8", "MANAGE", "ENGINE-MANAGED TP/SL (5-MIN POLL — FRACTIONAL ORDERS CAN'T CARRY SERVER BRACKETS) · " + fmt(p.MAX_HOLD_H, 0) +
+        "H TIME EXIT · −" + fmt(p.DAILY_LOSS_PCT, 0) + "% DAILY BREAKER (UTC AUTO-CLEAR) · STOP/STOP_PERP KILL FILES · ORPHAN RECONCILIATION"],
+    ] : [
       ["1", "SCAN", perps
         ? "CRYPTO X-PERP CONTRACTS EVERY CYCLE — ACCOUNT-SCOPED /account/instruments (MiFID USD-MARGINED)"
         : "~" + (f.eur_pairs || 270) + " EUR SPOT PAIRS EVERY CYCLE — KEYLESS OKX PUBLIC FEED"],
@@ -1106,7 +1425,7 @@
           FRESH_KEYS.add(key);
           if (t.kind === "OPEN") { newOpens++; SESS.lastOpen = t.text; flashTitle("▲ OPEN " + t.text.replace("▲ OPEN ", "").split("  ")[0]); }
           else if (t.kind === "CLOSE") { newCloses++; SESS.lastClose = t.text; flashTitle("▼ CLOSE " + t.text.slice(2, 60)); }
-          else if (t.kind === "JEV") newJevs++;
+          else if (t.kind === "JEV" || t.kind === "MODEL") newJevs++;
           else if (t.kind === "GATE") newRejects++;
         }
         KNOWN_TAPE.add(key);
@@ -1184,16 +1503,18 @@
     return "";
   }
   function tlText(e) {
-    // Currency from the event's own book (normalizer stamps ccy="USD" on perp
-    // events); defaults to EUR for the retired spot timeline.
+    // Currency from the event's own book (normalizer stamps ccy="USD" on the
+    // live stocks events); defaults to EUR for the retired spot timeline.
     const sym = e.ccy === "USD" ? "$" : "€";
     const side = e.side === "short" ? "▼ SHORT" : (e.side === "long" ? "▲ LONG" : "▲");
+    const isStocks = e.engine === "stocks";
     switch (e.event) {
       case "open": return side + " ENTRY FILLED @ " + e.fill_px + " · " + (e.ccy === "USD" ? "notional " : "stake ") + sym + fmt(e.stake) + " · " + (e.entry_type || "-") +
-        " · conf " + fmt(e.conf) + " margin " + fmt(e.margin) + " noul " + fmt(e.noul) +
-        (e.algo_ok === false ? " · ⚠ OCO ATTACH FAILED — POLL STOP OWNS IT" : " · OCO ATTACHED");
+        " · conf " + fmt(e.conf) + (isStocks ? "" : " margin " + fmt(e.margin) + " noul " + fmt(e.noul)) +
+        (isStocks ? " · ENGINE-MANAGED TP/SL" + (e.headline ? " · «" + String(e.headline).slice(0, 70) + "»" : "")
+          : (e.algo_ok === false ? " · ⚠ OCO ATTACH FAILED — POLL STOP OWNS IT" : " · OCO ATTACHED"));
       case "close": return "▼ MANAGED EXIT " + sgn(e.upc) + "% — " + (e.reason || "");
-      case "close_detected": return "▼ SERVER-SIDE EXIT " + sgn(e.upc) + "% — " + (e.note || "OCO fired on-exchange");
+      case "close_detected": return "▼ " + (isStocks ? "RECONCILED EXIT " : "SERVER-SIDE EXIT ") + sgn(e.upc) + "% — " + (e.note || (isStocks ? "position closed externally" : "OCO fired on-exchange"));
       case "trail_armed": return "◈ TRAIL ARMED · HWM +" + fmt(e.hwm_pct) + "% · callback " + fmt((e.callBackRatio || 0) * 100, 2) + "% · active @ " + e.activePx;
       case "quality_gate_reject": return "GATE REJECT: " + (e.fails || []).join("; ");
       case "universe_depth_reject": return "DEPTH REJECT — top5 book " + sym + e.depth_eur + " below floor";
@@ -1203,9 +1524,15 @@
         (e.after ? " after " + e.after : "");
       case "algo_fallback": return e.ok ? "STANDALONE OCO PLACED (attach fallback ok)" : "OCO FALLBACK ATTEMPTED";
       case "algo_fallback_err": return "⚠ OCO ATTACH ERROR: " + (e.err || "");
-      case "entry_unfilled": return "MAKER ENTRY UNFILLED — cancelled, no chase";
+      case "entry_unfilled": return "ENTRY UNFILLED — cancelled, no chase";
       case "close_dust": return "DUST CLEANUP (post-fee remainder)";
       case "prune_no_fill": return "PHANTOM POSITION PRUNED — " + (e.note || "");
+      case "exit_signal": return "◈ EXIT SIGNAL " + sgn(e.upc) + "% — " + (e.reason || "");
+      case "exit_deferred": return "◈ EXIT DEFERRED " + sgn(e.upc) + "% — " + (e.reason || "") + " (market closed; executes at next open)";
+      case "llm_err": return "⚠ NEWS LLM FAIL-CLOSED — no_trade (" + (e.err || "") + ")";
+      case "breaker_clear": return "DAILY BREAKER AUTO-CLEARED — UTC rollover";
+      case "skip": return "CYCLE SKIP — " + (e.why || "");
+      case "orphan_adopted": return "ORPHAN POSITION ADOPTED — engine now manages its TP/SL";
       default: return String(e.event).toUpperCase() + " · " + JSON.stringify(Object.fromEntries(
         Object.entries(e).filter(kv => ["event", "ts", "inst"].indexOf(kv[0]) < 0))).slice(0, 150);
     }
@@ -1292,10 +1619,10 @@
         }
       }
     });
-    return '<div class="msec"><h3>0 · THE TAPE — 5M CANDLES, ENTRY→EXIT, BRACKET OVERLAY (OKX HISTORICAL FEED)</h3>' +
+    return '<div class="msec"><h3>0 · THE TAPE — 5M CANDLES, ENTRY→EXIT, BRACKET OVERLAY (YAHOO FINANCE FEED)</h3>' +
       '<svg viewBox="0 0 ' + W + " " + H + '" style="width:100%;height:240px;display:block;background:#07070a;border:1px solid #1e1a0d">' +
       axis + taxis + bodies + marks + "</svg>" +
-      '<div class="dim" style="font-size:9.5px;margin-top:3px">▲/▼ DASHED = OUR FILLS · <span style="color:#29c9eb">CYAN</span> = TP LEVEL · <span style="color:#ff3b30">RED</span> = SL LEVEL · ◈ = HWM TRAIL ARMED ON-EXCHANGE · CANDLES ARE RAW OKX 5M OHLC</div></div>';
+      '<div class="dim" style="font-size:9.5px;margin-top:3px">▲/▼ DASHED = OUR FILLS · <span style="color:#29c9eb">CYAN</span> = TP LEVEL · <span style="color:#ff3b30">RED</span> = SL LEVEL · CANDLES ARE RAW YAHOO 5M OHLC</div></div>';
   }
 
   function openDossier(tid) {
@@ -1338,6 +1665,7 @@
     const ccy = t.ccy || "USD";
     const sym = ccy === "USD" ? "$" : "€";
     const mon = (n) => money(n, ccy);
+    const isStocks = t.engine === "stocks";
     const head = '<div class="modal-head"><span class="mt">◈ ' + esc(t.inst) +
       (t.side ? " (" + String(t.side).toUpperCase() + ")" : "") + " — " + sgn(t.upc) + "% → " + mon(t.net_eur) +
       '</span><span class="ms">' + esc(mmdd_hhmm(t.open_ts)) + " → " + esc(mmdd_hhmm(t.close_ts)) + " UTC · HELD " +
@@ -1365,14 +1693,26 @@
       '<div class="mgrid" style="margin-top:8px">' +
       '<div class="mbox"><div class="mk">PICKED</div><div class="mv">' + esc(String(dec.choice || "?").toUpperCase()) + "</div></div>" +
       '<div class="mbox"><div class="mk">CONFIDENCE</div><div class="mv">' + fmt(dec.confidence) + "</div></div>" +
-      '<div class="mbox"><div class="mk">MARGIN p(chosen)−p(flat)</div><div class="mv">' + sgn(dec.margin) + "</div></div>" +
-      '<div class="mbox"><div class="mk">NOUL MOVE-PROB</div><div class="mv ' + (dec.noul >= 0.45 ? "g" : "r") + '">' + fmt(dec.noul) + "</div></div>" +
-      "</div></div>";
+      (isStocks
+        ? '<div class="mbox"><div class="mk">IMPACT</div><div class="mv">' + esc(dec.impact || "—") + "</div></div>" +
+          '<div class="mbox"><div class="mk">DAY MOVE AT CALL</div><div class="mv ' + cls(ps.day_chg_pct) + '">' + sgn(ps.day_chg_pct) + "%</div></div>"
+        : '<div class="mbox"><div class="mk">MARGIN p(chosen)−p(flat)</div><div class="mv">' + sgn(dec.margin) + "</div></div>" +
+          '<div class="mbox"><div class="mk">NOUL MOVE-PROB</div><div class="mv ' + (dec.noul >= 0.45 ? "g" : "r") + '">' + fmt(dec.noul) + "</div></div>") +
+      "</div>" +
+      (isStocks && dec.rationale ? '<div class="dim" style="font-size:10px;margin-top:6px">MODEL RATIONALE: ' + esc(dec.rationale) + "</div>" : "") +
+      "</div>";
 
     const chosenKeys = Object.keys(dec.all_pairs || {});
     const pairRows = chosenKeys.map(k => {
       const p = dec.all_pairs[k] || {};
       const isChosen = k === t.inst;
+      if (isStocks) {
+        return "<tr" + (isChosen ? " class='chosen'" : "") + "><td class='sym'>" + (isChosen ? "▸ " : "") + esc(k) + "</td>" +
+          "<td class='" + cls(p.day_chg_pct) + "'>" + sgn(p.day_chg_pct) + "%</td>" +
+          "<td>" + esc(p.impact || "—") + "</td>" +
+          "<td class='cy'>+" + fmt(p.target_pct, 2) + "%</td>" +
+          "<td class='neg'>−" + fmt(p.stop_pct, 2) + "%</td></tr>";
+      }
       return "<tr" + (isChosen ? " class='chosen'" : "") + "><td class='sym'>" + (isChosen ? "▸ " : "") + esc(k) + "</td>" +
         "<td>" + fmt(p.bid, p.bid > 100 ? 2 : 4) + "</td>" +
         "<td class='" + cls(p.chg_30min_pct) + "'>" + sgn(p.chg_30min_pct) + "%</td>" +
@@ -1384,11 +1724,16 @@
         "<td>" + fmt(p.spread_pct, 3) + "%</td></tr>";
     }).join("");
     const sec2 = '<div class="msec"><h3>2 · THE MARKET STATE THE MODEL SAW — EXACT PROMPT INPUT</h3>' +
-      "<table class='pairmini'><tr><th>PAIR</th><th>BID</th><th>30M</th><th>4H</th><th>7D</th><th>R30 POS</th><th>GREEN BARS</th><th>VOL30</th><th>SPREAD</th></tr>" + pairRows + "</table>" +
+      (isStocks && dec.headline ? '<div class="news-item" style="margin-bottom:5px"><span class="src">[HEADLINE]</span>' + esc(dec.headline) + '</div>' : '') +
+      (isStocks
+        ? "<table class='pairmini'><tr><th>SYMBOL</th><th>DAY MOVE</th><th>IMPACT</th><th>TARGET</th><th>STOP</th></tr>" + pairRows + "</table>"
+        : "<table class='pairmini'><tr><th>PAIR</th><th>BID</th><th>30M</th><th>4H</th><th>7D</th><th>R30 POS</th><th>GREEN BARS</th><th>VOL30</th><th>SPREAD</th></tr>" + pairRows + "</table>") +
       '<div class="mgrid" style="margin-top:8px">' +
-      '<div class="mbox"><div class="mk">' + (ccy === "USD" ? "USDC COLLATERAL" : "CASH FREE") + '</div><div class="mv">' + mon(dec.cash_eur) + "</div></div>" +
-      '<div class="mbox"><div class="mk">' + (ccy === "USD" ? "NOTIONAL BUDGET" : "STAKE = ALL FUNDS/SLOTS") + '</div><div class="mv">' + mon(dec.stake_eur) + "</div></div>" +
-      '<div class="mbox"><div class="mk">BTC FUNDING</div><div class="mv">' + fmt(dec.funding_bps, 1) + " bps</div></div>" +
+      '<div class="mbox"><div class="mk">' + (isStocks ? "USD EQUITY" : ccy === "USD" ? "USDC COLLATERAL" : "CASH FREE") + '</div><div class="mv">' + mon(dec.cash_eur) + "</div></div>" +
+      '<div class="mbox"><div class="mk">' + (isStocks ? "LEG BUDGET (ALL-IN/SLOTS)" : ccy === "USD" ? "NOTIONAL BUDGET" : "STAKE = ALL FUNDS/SLOTS") + '</div><div class="mv">' + mon(dec.stake_eur) + "</div></div>" +
+      (isStocks
+        ? '<div class="mbox"><div class="mk">VENUE</div><div class="mv w">ALPACA · COMMISSION-FREE</div></div>'
+        : '<div class="mbox"><div class="mk">BTC FUNDING</div><div class="mv">' + fmt(dec.funding_bps, 1) + " bps</div></div>") +
       '<div class="mbox"><div class="mk">OPEN POSITIONS AT CALL</div><div class="mv w">' + ((dec.open_positions || []).length) + "</div></div>" +
       '<div class="mbox"><div class="mk">PROMPT</div><div class="mv w">' + ((dec.usage || {}).input_tokens || "?") + " in / " + ((dec.usage || {}).output_tokens || "?") + " out tok</div></div>" +
       '<div class="mbox"><div class="mk">STATE SIZE</div><div class="mv w">' + ((dec.prompt_stats || {}).state_chars || "?") + " chars" +
@@ -1405,32 +1750,42 @@
     const surprises = (dec.macro_surprises || []).map(e =>
       '<div class="newsline"><span class="s">[PRINT]</span> ' + esc(e.e) + ": act " + esc(e.act) + " vs fc " + esc(e.fc) + " · " + fmt(e.ago_h, 1) + "h ago</div>").join("");
     const trending = (dec.trending || []).map(x => '<span class="chip">' + esc(x) + "</span>").join("");
-    const sec3 = '<div class="msec"><h3>3 · ' + (ccy === "USD"
-      ? "MARKET CONTEXT IN THE SAME PROMPT (FUNDING + MOMENTUM — THIS BOOK DOES NOT INJECT NEWS/MACRO)"
-      : "NEWS + SENTIMENT + MACRO IN THE SAME PROMPT") + '</h3>' +
-      (ccy === "USD"
+    const sec3 = '<div class="msec"><h3>3 · ' + (isStocks
+      ? "THE NEWS CATALYST — THE LIVE BOOK'S SIGNAL"
+      : ccy === "USD"
+        ? "MARKET CONTEXT IN THE SAME PROMPT (FUNDING + MOMENTUM — THIS BOOK DOES NOT INJECT NEWS/MACRO)"
+        : "NEWS + SENTIMENT + MACRO IN THE SAME PROMPT") + '</h3>' +
+      (isStocks
+        ? '<div class="dim" style="font-size:10px;margin-bottom:4px">THE STOCKS ENGINE DECIDES ON FRESH COMPANY HEADLINES (ALPACA NEWS API). THE HEADLINE ABOVE IS THE EXACT CATALYST THE MODEL SAW; NO FEAR&amp;GREED / FUNDING / ECON-CALENDAR CONTEXT EXISTS IN THIS BOOK.</div>' +
+          (dec.headline ? '<div class="newsline"><span class="s">[CATALYST]</span> ' + esc(dec.headline) + '</div>' : '<div class="dim">headline not captured in this dossier</div>') +
+          (dec.rationale ? '<div class="newsline"><span class="s">[MODEL]</span> ' + esc(dec.rationale) + '</div>' : '')
+        : ccy === "USD"
         ? '<div class="dim" style="font-size:10px;margin-bottom:4px">THE X-PERP ENGINE FEEDS THE MODEL PER-CONTRACT FUNDING AND 30M/4H/7D MOMENTUM. THE NEWS / FEAR&amp;GREED / ECON-CALENDAR BLOCKS BELOW WERE CONTEXT FOR THE RETIRED SPOT ENGINE AND ARE NOT PART OF THIS BOOK\'S DECISION — SHOWN ONLY SO THE REPLAY IS COMPLETE, NOT AS INPUTS THAT DROVE IT.</div>'
         : '<div class="dim" style="font-size:10px;margin-bottom:4px">WIRE STATE AT CALL: ' + esc(mmdd_hhmm(dec.news_updated)) +
           " UTC (30-MIN REFRESH GUARD) · FEAR&amp;GREED " +
           (fg.value !== undefined ? fg.value + " " + esc(fg.label) + " (streak " + fg.streak_days + "d)" : "—") +
           (trending ? " · TRENDING: " + trending : "") + "</div>") +
-      newsLines +
-      (macroLines ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">UPCOMING MACRO ≥★★</div>' + macroLines : "") +
-      (surprises ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">RECENT SURPRISE PRINTS</div>' + surprises : "") +
+      (isStocks ? "" : newsLines) +
+      (!isStocks && macroLines ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">UPCOMING MACRO ≥★★</div>' + macroLines : "") +
+      (!isStocks && surprises ? '<div class="dim" style="font-size:10px;margin:6px 0 3px">RECENT SURPRISE PRINTS</div>' + surprises : "") +
       "</div>";
 
     const rejects = (d.pre_entry_rejects || []).map(r =>
       '<div class="dim" style="font-size:10px">' + esc(hhmm(r.ts)) + " — same pair rejected minutes earlier: " + esc((r.fails || []).join("; ")) + " (setup had not matured yet)</div>").join("");
-    const sec4 = '<div class="msec"><h3>4 · PRE-ENTRY GAUNTLET — WHAT THIS PAIR SURVIVED BEFORE THE MODEL WAS ASKED</h3>' +
-      '<div class="dim" style="font-size:10.5px">' + (ccy === "USD"
+    const sec4 = '<div class="msec"><h3>4 · PRE-ENTRY GAUNTLET — WHAT THIS ' + (isStocks ? 'SYMBOL' : 'PAIR') + ' SURVIVED BEFORE THE MODEL WAS ASKED</h3>' +
+      '<div class="dim" style="font-size:10.5px">' + (isStocks
+        ? "SPREAD ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · ASK-vs-LAST ≤" + fmt(P.ASK_VS_LAST_PCT, 2) + "% · QUOTE ≤" + fmt(P.QUOTE_STALE_S, 0) + "S · CHASE ≤+" + fmt(P.CHASE_CAP_PCT, 1) + "% DAY · KNIFE ≥" + fmt(P.KNIFE_FLOOR_PCT, 1) + "% · ONE ENTRY/SYMBOL/DAY · THEN POST-MODEL: CONF ≥" + fmt(P.CONF_FLOOR, 2) + " AND IMPACT ≠ LOW · MAX " + fmt(P.MAX_OPEN, 0) + " SLOTS."
+        : ccy === "USD"
         ? "LIQUIDITY FLOOR ≥" + sym + Math.round((P.MIN_VOL24H_USD || 300000) / 1000) + "K · SPREAD CAP ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · RANGE FLOOR ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · TOP-5 BOOK DEPTH ≥" + sym + Math.round(P.MIN_TOP5_DEPTH_USD || 1000) + " · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× NOTIONAL AT ENTRY MOMENT."
         : "LIQUIDITY FLOOR · SPREAD CAP · RANGE FLOOR · TOP-5 BOOK DEPTH ≥€1.5K · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× STAKE AT ENTRY MOMENT.") + "</div>" +
-      (rejects ? '<div style="margin-top:4px">' + rejects + "</div>" : '<div class="dim" style="margin-top:4px;font-size:10px">no rejects logged for this pair in the 12m before entry — it cleared the gauntlet on the first pass</div>') +
+      (rejects ? '<div style="margin-top:4px">' + rejects + "</div>" : '<div class="dim" style="margin-top:4px;font-size:10px">no rejects logged for this ' + (isStocks ? 'symbol' : 'pair') + ' in the 12m before entry — it cleared the gauntlet on the first pass</div>') +
       '<div class="mgrid" style="margin-top:6px">' +
-      '<div class="mbox"><div class="mk">TP (4× ALL-IN COST)</div><div class="mv">+' + fmt(b.tp_pct) + "%</div></div>" +
+      '<div class="mbox"><div class="mk">' + (isStocks ? "TP (MODEL, CLAMPED)" : "TP (4× ALL-IN COST)") + '</div><div class="mv">+' + fmt(b.tp_pct) + "%</div></div>" +
       '<div class="mbox"><div class="mk">HARD SL</div><div class="mv r">−' + fmt(b.sl_pct) + "%</div></div>" +
-      '<div class="mbox"><div class="mk">TRAIL ARM / GIVEBACK</div><div class="mv">+' + fmt(b.trail_arm_pct) + "% / " + fmt(b.trail_giveback_pct) + "%</div></div>" +
-      '<div class="mbox"><div class="mk">ALL-IN COST</div><div class="mv w">' + fmt(b.cost_pct) + "%</div></div>" +
+      (isStocks
+        ? '<div class="mbox"><div class="mk">TIME EXIT</div><div class="mv">' + fmt((t.max_hold_h || P.MAX_HOLD_H || 48), 0) + "h</div></div>"
+        : '<div class="mbox"><div class="mk">TRAIL ARM / GIVEBACK</div><div class="mv">+' + fmt(b.trail_arm_pct) + "% / " + fmt(b.trail_giveback_pct) + "%</div></div>") +
+      '<div class="mbox"><div class="mk">' + (isStocks ? "EST. ROUND-TRIP COST" : "ALL-IN COST") + '</div><div class="mv w">' + fmt(b.cost_pct) + "%</div></div>" +
       "</div></div>";
 
     const tl = (d.timeline || []).map(e =>
@@ -1449,6 +1804,38 @@
         esc(String(dec.context).slice(0, 1500)) + (String(dec.context || "").length > 1500 ? " […]" : "") + "</div>" : "") + "</div>";
 
     modalOpen(head + '<div class="modal-body">' + verdict + candleChart(d) + sec1 + sec2 + sec3 + sec4 + sec5 + sec6 + "</div>");
+  }
+
+  /* ---------- retired OKX X-Perps record (baked final stats) ---------- */
+  function renderOkxRetired(D) {
+    const panel = document.getElementById("p-okx");
+    if (!panel) return;
+    const r = D.retired_okx || ((D.engine || {}).okx_book || {}).record;
+    if (!r) { panel.style.display = "none"; return; }
+    panel.style.display = "";
+    const tag = $("okx-retired-tag");
+    if (tag) tag.textContent = r.label || "RETIRED 2026-11-19 · venue moved to Alpaca US stocks (operator directive)";
+    const k = (label, val, c) => kpi(label, val, c || "white");
+    $("okx-body").innerHTML =
+      '<div class="dim" style="margin-bottom:6px">' + esc(r.venue || "OKX EUROPE (EEA) · X-PERPS") +
+      ' · FINAL ENGINE ' + esc(r.engine_version_final || "—") +
+      ' · ACTIVE ' + esc(mmdd_hhmm(r.first_ts)) + ' → ' + esc(mmdd_hhmm(r.last_close_ts)) + ' UTC (last close)' +
+      ' — two-way USD-settled MiFID perps, LONG + SHORT. ' + esc(r.why || "") + '</div>' +
+      '<div class="kpis">' +
+      k("TRADES CLOSED", r.trades_closed, "white", true) +
+      k("WIN RATE", fmt(r.win_rate_pct, 1) + "%", "white", true) +
+      k("NET (ALL FEES)", sgn(r.net_usd) + " $", cls(r.net_usd), true) +
+      k("NET % OF CAPITAL", sgn(r.net_pct) + "%", cls(r.net_pct)) +
+      k("NET (CLOSE FEES ONLY)*", sgn(r.net_usd_approx) + " $", cls(r.net_usd_approx)) +
+      k("CAPITAL PUT IN", "$" + fmt(r.capital_usd, 2), "white") +
+      k("LONG / SHORT", (r.longs || 0) + "L / " + (r.shorts || 0) + "S", "white") +
+      k("LONG NET / SHORT NET", sgn(r.long_net_usd) + " / " + sgn(r.short_net_usd) + " $", "white") +
+      k("FEES (ENTRY+CLOSE)", "$" + fmt(r.fees_all_usd, 2), "red") +
+      k("BEST / WORST", (r.best_trade ? esc(String(r.best_trade.inst).split("-")[0]) + " " + sgn(r.best_trade.upc) + "%" : "—") +
+        " / " + (r.worst_trade ? esc(String(r.worst_trade.inst).split("-")[0]) + " " + sgn(r.worst_trade.upc) + "%" : "—"), "white") +
+      '</div>' +
+      '<div class="dim" style="margin-top:6px;font-size:9.5px">* APPROXIMATION COUNTS CLOSE-SIDE FEES ONLY; THE HEADLINE NET ALSO COUNTS ENTRY FEES (THE HONEST LEDGER NUMBER). ' +
+      esc(r.note || "") + ' FINAL STATS COMPUTED FROM THE FULL OKX-ERA LOG AT CUTOVER; THE HISTORY FILES ARE RETAINED.</div>';
   }
 
   /* ---------- clock + title flash ---------- */
@@ -1476,7 +1863,7 @@
     const D = CUR_DATA;
     document.title = (D && D.equity && D.equity.day_pnl_pct !== undefined && D.equity.day_pnl_pct !== null
       ? ((D.equity.day_pnl_pct >= 0 ? "+" : "") + D.equity.day_pnl_pct.toFixed(2) + "% · ")
-      : "") + "OBEKT TERMINAL — Autonomous Crypto Trading, Live";
+      : "") + "OBEKT TERMINAL — Autonomous US-Stock News Trading, Live";
   }
 
   function renderAll(D) {
@@ -1485,6 +1872,7 @@
     renderJev(D); renderGates(D); renderEquity(D); renderFunnel(D); renderExits(D);
     renderHours(D); renderScatter(D); renderInst(D); renderUniverse(D); renderPositions(D);
     renderPerp(D);
+    renderOkxRetired(D);
     renderNews(D); renderSent(D); renderMacro(D); renderHist(D);
     renderTrades(D); renderDaily(D); renderArch(D); renderStack(D); renderOptim(D);
     renderCostLive(D); renderTape(D); renderSession(D);
@@ -1537,19 +1925,20 @@ function bootSequence(D) {
   const P = D.perp || {}, ps = P.stats || {};
   const spotRetired = /retired/i.test(String(((D.engine || {}).spot_book || {}).status || ""));
   const lines = [
-    "▚▚ OBEKT TERMINAL " + ((D.engine || {}).version || "v3.5") + " — AUTONOMOUS TRADING OBSERVATION DECK",
+    "▚▚ OBEKT TERMINAL " + ((D.engine || {}).version || "v11.0-news") + " — AUTONOMOUS TRADING OBSERVATION DECK",
     "",
-    "[ok] link okx europe (eea) .................. " + ((D.tickers || []).length || 10) + " MARKET FEEDS SYNCED",
+    "[ok] link alpaca us stocks .................. " + ((D.tickers || []).length || 10) + " MARKET FEEDS SYNCED (YAHOO FINANCE)",
     "[ok] engine log ........................... " + (f.cycles ? f.cycles.toLocaleString() : "—") + " CYCLES · " + (f.uptime_h || "—") + "H UNATTENDED",
-    "[ok] jev system-one decision model ......... " + (f.jev_calls || "—") + " TYPED CALLS · $" + ((f.usd_all !== undefined) ? f.usd_all.toFixed(2) : "—") + " SPENT",
+    "[ok] halogen news decision model .......... " + (f.jev_calls || "—") + " TYPED CALLS · SELF-HOSTED, $0 MARGINAL",
     "[ok] selectivity funnel .................... " + (f.pair_scans_all ? f.pair_scans_all.toLocaleString() : "—") + " SCANS → " + (f.opens || "—") + " TRADES OPENED",
     "[ok] halogen-qwen3.8-flash-next desk llm ... COMMENTARY STREAM ARMED",
-    "[ok] news/sentiment/macro injection ......... RSS + FEAR&GREED + ECON CALENDAR",
-    "[ok] risk layer ............................. SERVER-SIDE OCO + HWM TRAIL + BREAKER",
+    "[ok] news signal ............................ ALPACA NEWS API · FRESH HEADLINES ≤90M",
+    "[ok] risk layer ............................. ENGINE-MANAGED TP/SL + 48H TIME EXIT + −8% BREAKER",
     "[ok] live capital ........................... " + (spotRetired
-      ? "$" + (P.usdc_equity !== undefined ? P.usdc_equity.toFixed(2) : "—") + " USDC COLLATERAL · " +
-        (ps.trades_all || 0) + " X-PERP TRADES · SPOT BOOK RETIRED (" +
-        (s.trades_all || 0) + " EUR TRADES ON RECORD)"
+      ? "$" + (P.usdc_equity !== undefined ? P.usdc_equity.toFixed(2) : "—") + " USD · " +
+        (ps.trades_all || 0) + " STOCK TRADES · OKX ERA RETIRED 11-19 (X-PERPS " +
+        (((D.retired_okx || {}).trades_closed) || "—") + " TRADES · SPOT " +
+        (s.trades_all || 0) + " TRADES ON RECORD)"
       : "€" + (eq.equity_eur !== undefined ? eq.equity_eur.toFixed(2) : "—") + " EQUITY · " +
         (s.trades_all || "—") + " REALIZED TRADES"),
     "",

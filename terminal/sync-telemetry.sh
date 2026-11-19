@@ -17,7 +17,7 @@
 # TRADER_DEST is REQUIRED and has no default on purpose: this file is public,
 # so a hardcoded host would publish infrastructure detail. Export it in your
 # shell profile or the cron/launchd environment, e.g.
-#   export TRADER_DEST=trader@myhost:/opt/trader/data/
+#   export TRADER_DEST=trader@myhost:/srv/obekt/data/
 
 set -euo pipefail
 
@@ -31,13 +31,19 @@ fi
 LOCK="/tmp/obekt-telemetry-sync.lock"
 
 # --- the whitelist. Nothing outside this list is ever sent. -----------------
+# Stocks era (2026-11-19+): the Alpaca engine REUSES the perp_* filenames and
+# event vocabulary, so the live feed is perp_log.jsonl + its state files. The
+# retired spot log/universe are included so the deck's frozen history panels
+# still render. See engine/alpaca_stocks.py for the authoritative file set.
 FILES=(
-  okx_jev_log.jsonl   # the full decision/trade audit trail (the main feed)
-  universe.json       # latest universe scan
-  social.json         # fear&greed / trending / funding
-  catalyst.json       # news headlines riding in prompts
-  risk_state.json     # cooldowns, daily breaker, session state
-  positions.json      # engine's own position metadata
+  perp_log.jsonl        # LIVE stocks book: the full decision/trade audit trail
+  perp_positions.json   # live position metadata (engine-managed TP/SL)
+  perp_status.json      # engine snapshot (equity, positions, last call)
+  perp_risk_state.json  # daily breaker / session state
+  news_state.json       # seen/acted headline ids + market-open transition flag
+  stocks_news.json      # fresh Alpaca News API headlines (the live signal)
+  okx_jev_log.jsonl     # RETIRED spot book log (frozen history panels)
+  universe.json         # retired spot universe scan (history)
 )
 
 # single-flight: skip if a previous push is still running (portable mkdir lock)

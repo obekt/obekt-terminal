@@ -190,16 +190,10 @@ def _llm_key():
     k = os.environ.get("TERMINAL_LLM_API_KEY")
     if k:
         return k
-    try:
-        for line in open("/root/.env"):
-            if line.startswith("LITELLM_MASTER_KEY="):
-                return line.strip().split("=", 1)[1]
-    except OSError:
-        pass
     p = os.path.expanduser("~/.config/litellm/credentials.json")
     if os.path.exists(p):
         return json.load(open(p)).get("api_key")
-    raise RuntimeError("no LLM key: set TERMINAL_LLM_API_KEY or provide /root/.env LITELLM_MASTER_KEY")
+    raise RuntimeError("no LLM key: set TERMINAL_LLM_API_KEY or provide ~/.config/litellm/credentials.json")
 
 _LLM_SYS = ("You are the decision engine of an autonomous crypto trading system. You receive a JSON market "
             "state and a set of questions. Answer EVERY question. Respond with ONLY one JSON object, no prose, "

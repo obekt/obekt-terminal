@@ -31,7 +31,8 @@
 <main class="vf">
   <h1>PROOF OF TRADES</h1>
   <p>Every day at 00:03 UTC, an isolated script on our server reads the
-  <b>exchange's own account equity and open positions straight from OKX</b>,
+  <b>venue's own account equity and open positions</b> (straight from OKX through
+  2026-11-19; from Alpaca US stocks after the venue change),
   signs that snapshot with an ed25519 key, and appends it to a hash chain — each
   line seals the previous one. The current chain head is additionally committed
   to our <a href="https://github.com/obekt/obekt-terminal/blob/main/verify/HEAD.json">public
@@ -50,7 +51,7 @@
 
   <h2>LIVE CHAIN <span id="chain-status">fetching…</span></h2>
   <table id="chain-table">
-    <thead><tr><th>#</th><th>UTC</th><th>ENGINE</th><th>EQUITY USDC</th><th>uPnL USDC</th><th>OPEN</th></tr></thead>
+    <thead><tr><th>#</th><th>UTC</th><th>ENGINE</th><th>EQUITY (USD/USDC)</th><th>uPnL (USD/USDC)</th><th>OPEN</th></tr></thead>
     <tbody><tr><td colspan="6">—</td></tr></tbody>
   </table>
 
@@ -78,9 +79,11 @@ fetch('chain.jsonl').then(function(r){return r.text();}).then(function(t){
   var tb=document.querySelector('#chain-table tbody'),rows='';
   lines.forEach(function(l){
     try{var e=JSON.parse(l),p=e.payload;
+      var eq=p.okx_equity_usdc!=null?p.okx_equity_usdc:(p.equity_usd!=null?p.equity_usd:(p.alpaca_equity_usd!=null?p.alpaca_equity_usd:p.stocks_equity_usd));
+      var up=p.okx_unrealized_pnl_usdc!=null?p.okx_unrealized_pnl_usdc:p.unrealized_pnl_usd;
       rows+='<tr><td>'+e.seq+'</td><td>'+e.ts.slice(0,16).replace('T',' ')+
-        '</td><td>'+(p.engine||'?')+'</td><td>'+(p.okx_equity_usdc!=null?p.okx_equity_usdc.toFixed(2):'—')+
-        '</td><td>'+(p.okx_unrealized_pnl_usdc!=null?p.okx_unrealized_pnl_usdc.toFixed(2):'—')+
+        '</td><td>'+(p.engine||'?')+'</td><td>'+(eq!=null?eq.toFixed(2):'—')+
+        '</td><td>'+(up!=null?up.toFixed(2):'—')+
         '</td><td>'+((p.open_positions||[]).length)+'</td></tr>';}catch(err){}
   });
   tb.innerHTML=rows||'<tr><td colspan="6">chain not yet seeded</td></tr>';

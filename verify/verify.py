@@ -11,7 +11,7 @@ anchored to GitHub commit history: verify/HEAD.json.
 
 What this proves: every daily snapshot of the exchange equity was signed by the
 key holder, in order, without gaps or edits. What it does NOT prove: that the
-key holder trades well, or that OKX itself is honest. Bring your own trust.
+key holder trades well, or that the venue itself is honest. Bring your own trust.
 """
 import argparse
 import base64
@@ -92,10 +92,19 @@ def main():
     last = json.loads(lines[-1])
     p = last["payload"]
     print("head  seq=%s ts=%s engine=%s" % (last["seq"], last["ts"][:16], p.get("engine")))
-    if p.get("okx_equity_usdc") is not None:
+    eq = p.get("okx_equity_usdc")
+    if eq is None:
+        # stocks-era snapshots (venue changed 2026-11-19) may carry USD keys
+        for k in ("equity_usd", "alpaca_equity_usd", "stocks_equity_usd"):
+            if p.get(k) is not None:
+                eq = p[k]
+                break
+    if eq is not None:
+        upnl = p.get("okx_unrealized_pnl_usdc")
+        if upnl is None:
+            upnl = p.get("unrealized_pnl_usd")
         print("      equity $%s  uPnL $%s  open=%d" % (
-            p["okx_equity_usdc"], p.get("okx_unrealized_pnl_usdc"),
-            len(p.get("open_positions") or [])))
+            eq, upnl, len(p.get("open_positions") or [])))
 
     if args.anchor and args.anchor != "none":
         try:

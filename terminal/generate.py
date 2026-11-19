@@ -2,10 +2,18 @@
 """
 OBEKT TERMINAL — data generator.
 
-Reads the LIVE trading system state (~/.hermes/workspace/okx):
-  okx_jev_log.jsonl, universe.json, social.json, catalyst.json,
-  risk_state.json, positions.json
-+ keyless OKX public tickers (eea.okx.com)
+VENUE CHANGE 2026-11-19 (operator directive): the live book moved from OKX EEA
+crypto X-Perps to ALPACA US STOCKS (engine alpaca_stocks.py, v11.0-news,
+news-driven halogen decisions + deterministic code gates, LONG-ONLY). The OKX
+era (spot EUR book 09-28→10-15, X-Perp book 10-15→11-19) is RETIRED history.
+
+Reads the LIVE engine telemetry dir (OKX_TERMINAL_BASE env — historical name,
+now the Alpaca engine's directory):
+  perp_log.jsonl / perp_positions.json / perp_status.json / perp_risk_state.json
+  (the stocks engine REUSES the perp filenames + event vocabulary on purpose)
+  stocks_news.json (fresh headlines, written by the engine each scan)
++ the retired books' frozen logs (okx_jev_log.jsonl, universe.json)
++ keyless Yahoo Finance public quotes/candles for the stock marquee
 + a local/hosted LLM (OpenAI-compatible) for desk commentary, cached
 
 Writes site/data.json and site/data.js (window.TT_DATA = ...).
@@ -24,11 +32,16 @@ import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
 
-# Engine workspace: the directory holding okx_jev_log.jsonl, universe.json,
-# social.json, catalyst.json, risk_state.json, positions.json. Override with env.
+# Engine telemetry dir. OKX_TERMINAL_BASE is a HISTORICAL env name (the compose
+# file sets it); since the 2026-11-19 venue change it points at the Alpaca
+# stocks engine's directory. The stocks engine reuses the perp_* filenames.
 BASE = os.path.expanduser(os.environ.get("OKX_TERMINAL_BASE", "~/.hermes/workspace/okx"))
 SITE = os.path.dirname(os.path.abspath(__file__))
 LOG_PATH = os.path.join(BASE, "okx_jev_log.jsonl")
+
+# The LIVE engine source file — single source of truth for the version string
+# and every parsed gate constant. Never hardcode what this file declares.
+LIVE_ENGINE = "alpaca_stocks.py"
 
 # Desk-commentary LLM: ANY OpenAI-compatible chat-completions endpoint works —
 # a local model (llama.cpp / LM Studio / vLLM), or a cheap hosted relay.
@@ -45,8 +58,11 @@ os.makedirs(STATE_DIR, exist_ok=True)
 COMMENTARY_CACHE = os.path.join(STATE_DIR, "commentary_cache.json")
 TICKER_CACHE = os.path.join(STATE_DIR, "ticker_cache.json")
 
-MARQUEE_INSTS = ["BTC-EUR", "ETH-EUR", "SOL-EUR", "XRP-EUR", "NEAR-EUR",
-                 "SUI-EUR", "PUMP-EUR", "LINK-EUR", "AAVE-EUR", "AVAX-EUR"]
+# Stock marquee (keyless Yahoo Finance). Was OKX EUR crypto pairs until the
+# 2026-11-19 venue change; the live book now trades US equities, so the ticker
+# tape shows broad-market benchmarks + the megacaps the news engine watches.
+MARQUEE_INSTS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA",
+                 "AMZN", "GOOGL", "META", "AMD"]
 
 CONTACT_LINE = os.environ.get(
     "TERMINAL_CONTACT_LINE",
@@ -84,27 +100,28 @@ def _p_directional(probs, base):
 
 def _live_params():
     """Every number the ARCHITECTURE panel quotes, parsed from the LIVE engine's
-    source. This panel was the single worst offender for drift: it hardcoded all
-    eight steps describing the retired spot engine — "MARGIN ≥0.25", "IOC CHASE
-    FALLBACK" (deleted in v3.8), "STAKE = ALL FREE EUR", cooldowns 15/30, stale
-    exit 90m — while the live book ran entirely different values. Parse, never
-    transcribe."""
-    fname = "okx_perp.py" if SPOT_BOOK_RETIRED else "okx_jev.py"
-    defaults = {"MARGIN_BAR": 0.30, "CONF_BAR": 0.50, "CONF_FLOOR": 0.40,
-                "NOUL_BAR": 0.45, "MIN_VOL24H_USD": 300000, "MIN_TOP5_DEPTH_USD": 1000,
-                "MAX_SPREAD_PCT": 0.10, "MIN_DAY_RANGE_PCT": 1.5, "EDGE_MULT": 4.0,
-                "MIN_TARGET_PCT": 0.6, "MAX_TARGET_PCT": 2.0, "SL_COST_MULT": 1.75,
-                "TIME_STOP_MIN": 30, "STALE_EXIT_MIN": 60, "COOLDOWN_MIN": 20,
-                "WIN_COOLDOWN_MIN": 10, "DAILY_LOSS_PCT": 8.0, "MAX_NOTIONAL_FRAC": 0.98,
-                "PERP_LEV": "1", "MIN_VOL30_PCT": 0.35, "MAX_JEV_PAIRS": 4, "MAX_OPEN": 4}
+    source (alpaca_stocks.py since the 2026-11-19 venue change). This panel was
+    the single worst offender for drift under OKX: it hardcoded values from a
+    retired engine while the live book ran different ones. Parse, never
+    transcribe. Defaults below mirror the stocks engine's declared constants
+    and are used ONLY if the source file is unreadable."""
+    fname = LIVE_ENGINE
+    defaults = {"CONF_FLOOR": 0.60, "MAX_OPEN": 2, "MAX_NOTIONAL_FRAC": 0.98,
+                "MAX_NOTIONAL_USD": 500.0, "MAX_SPREAD_PCT": 1.00,
+                "ASK_VS_LAST_PCT": 0.35, "QUOTE_STALE_S": 90,
+                "CHASE_CAP_PCT": 7.0, "KNIFE_FLOOR_PCT": -9.0,
+                "TP_MIN": 1.0, "TP_MAX": 5.0, "SL_MIN": 0.8, "SL_MAX": 3.0,
+                "TP_SL_RATIO": 1.5, "MAX_HOLD_H": 48.0, "DAILY_LOSS_PCT": 8.0,
+                "NEWS_WINDOW_MIN": 90, "MAX_LLM_CALLS": 4,
+                "SELL_REG_FEE_RATE": 0.00003, "HEARTBEAT_S": 1800}
     try:
-        src = open(os.path.join(BASE, fname)).read(40960)
+        src = open(os.path.join(BASE, fname)).read(65536)
     except Exception:
-        return dict(defaults, source=fname, retired_book=SPOT_BOOK_RETIRED,
-                    has_prompt_budget=False)
+        return dict(defaults, source=fname, has_prompt_budget=False)
     out = dict(defaults)
     for name, dflt in defaults.items():
-        m = re.search(r'^%s\s*=\s*"?([0-9_.]+)"?' % name, src, re.M)
+        # allow a leading minus (KNIFE_FLOOR_PCT is negative)
+        m = re.search(r'^%s\s*=\s*"?(-?[0-9_.]+)"?' % name, src, re.M)
         if not m:
             continue
         raw = m.group(1).replace("_", "")
@@ -112,12 +129,15 @@ def _live_params():
             out[name] = float(raw) if "." in raw else int(raw)
         except ValueError:
             out[name] = raw
+    # tuple assignments (TP_MIN, TP_MAX = 1.0, 5.0) don't match the per-name
+    # regex above — parse them explicitly.
+    for a, b in (("TP_MIN", "TP_MAX"), ("SL_MIN", "SL_MAX")):
+        m = re.search(r'^%s,\s*%s\s*=\s*([0-9.]+),\s*([0-9.]+)' % (a, b), src, re.M)
+        if m:
+            out[a], out[b] = float(m.group(1)), float(m.group(2))
     out["source"] = fname
-    out["retired_book"] = SPOT_BOOK_RETIRED
-    # Prompt-budget machinery only exists in whichever engine actually defines it.
-    # The live X-Perp engine has NO trim loop (its prompt is small: <=4 contracts),
-    # so a panel claiming "the engine hard-caps input" would describe code that
-    # isn't running. Report presence explicitly instead of implying it.
+    # Prompt-budget machinery: the stocks prompt is ONE headline + summary +
+    # price context, so there is no trim loop. Report presence explicitly.
     for pname in ("MAX_STATE_CHARS", "MAX_JEV_INPUT_TOKENS", "CHARS_PER_TOKEN"):
         m = re.search(r'^%s\s*=\s*([0-9_.]+)' % pname, src, re.M)
         try:
@@ -126,6 +146,22 @@ def _live_params():
             out[pname] = None
     out["has_prompt_budget"] = out.get("MAX_STATE_CHARS") is not None
     return out
+
+
+def _stocks_universe():
+    """The fixed US-stock universe, parsed from the LIVE engine source (single
+    source of truth — the engine's UNIVERSE list is what it actually scans)."""
+    try:
+        src = open(os.path.join(BASE, LIVE_ENGINE)).read(65536)
+        m = re.search(r'^UNIVERSE\s*=\s*(\[[^\]]+\])', src, re.M | re.S)
+        if m:
+            import ast
+            val = ast.literal_eval(m.group(1))
+            if isinstance(val, list) and all(isinstance(x, str) for x in val):
+                return val
+    except Exception:
+        pass
+    return []
 
 
 def _engine_bars(fname="okx_jev.py"):
@@ -150,33 +186,26 @@ def _engine_bars(fname="okx_jev.py"):
     return tuple(vals) if all(v is not None for v in vals) else defaults
 
 
-def _perp_cooldowns():
-    """Cooldown windows parsed from the LIVE engine source (never hardcoded — they
-    drifted twice already) plus the perp risk-state exits map, so the gates panel
-    shows the live book's lockouts rather than the retired spot book's frozen ones.
-    """
-    try:
-        src = open(os.path.join(BASE, "okx_perp.py")).read(32768)
-        def _num(name):
-            m = re.search(r'^%s\s*=\s*([0-9.]+)' % name, src, re.M)
-            return int(float(m.group(1))) if m else None
-        loss = _num("COOLDOWN_MIN")
-        win = _num("WIN_COOLDOWN_MIN")
-    except Exception:
-        loss = win = None
-    exits = (_load_json(os.path.join(BASE, "perp_risk_state.json"), {}) or {}).get("exits") or {}
-    return {"loss_min": loss or 20, "win_min": win or 10, "exits": exits}
+def _live_risk():
+    """Risk-state summary for the LIVE (stocks) book. The Alpaca engine has no
+    win/loss cooldowns — its re-entry lockout is ONE ENTRY PER SYMBOL PER DAY
+    (news_state.json 'acted'), plus the 48h time exit and the -8% daily breaker.
+    Windows/limits parsed from the engine source, never hardcoded."""
+    p = _live_params()
+    acted = (_load_json(os.path.join(BASE, "news_state.json"), {}) or {}).get("acted") or {}
+    return {"loss_min": None, "win_min": None, "exits": {},
+            "one_entry_per_symbol_per_day": True,
+            "acted_today": sorted(acted.keys()),
+            "max_hold_h": p.get("MAX_HOLD_H"),
+            "daily_loss_pct": p.get("DAILY_LOSS_PCT")}
 
 
 def _perp_engine_version():
-    """ENGINE_VERSION from okx_perp.py source — single source of truth, so the
-    perp panel's version can never drift from the engine actually running."""
-    try:
-        src = open(os.path.join(BASE, "okx_perp.py")).read(16384)
-        m = re.search(r'ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src)
-        return m.group(1) if m else None
-    except Exception:
-        return None
+    """ENGINE_VERSION from the LIVE engine source (alpaca_stocks.py) — single
+    source of truth, so the panel's version can never drift from the engine
+    actually running. Function name is historical (the live book's telemetry
+    files are still named perp_*)."""
+    return _src_version(LIVE_ENGINE)
 
 
 # 2026-10-15: the operator consolidated the account into the two-way book. The
@@ -185,6 +214,12 @@ def _perp_engine_version():
 # version string so the deck can't contradict itself; flip it back to False if
 # the spot timer is ever re-enabled.
 SPOT_BOOK_RETIRED = True
+
+# Baked historical fallbacks for the retired engines' final versions — used
+# ONLY when their source files are no longer present (e.g. archived after the
+# venue cutover). When the sources exist, versions are parsed from them.
+OKX_PERP_FINAL_VERSION = "v10.0-fade"   # okx_perp.py at retirement (2026-11-19)
+SPOT_FINAL_VERSION = "v3.10"            # okx_jev.py at retirement (2026-10-15)
 
 
 def _src_version(fname):
@@ -198,7 +233,9 @@ def _src_version(fname):
 
 
 def _engine_versions():
-    return {"spot": _src_version("okx_jev.py"), "perp": _src_version("okx_perp.py")}
+    return {"spot": _src_version("okx_jev.py"),
+            "perp": _src_version("okx_perp.py"),
+            "stocks": _src_version(LIVE_ENGINE)}
 
 
 _VERSIONS_CACHE = {"ts": 0.0, "val": None}
@@ -218,14 +255,21 @@ def _versions():
 
 
 def _engine_version():
-    """Combined version across both engines (spot okx_jev.py + perp okx_perp.py).
-    Read from source = single source of truth; never hardcode (it drifts)."""
+    """Combined version line. Read from source = single source of truth; never
+    hardcode (it drifts). Since the 2026-11-19 venue change the LIVE engine is
+    alpaca_stocks.py; both OKX books are retired history and labelled as such."""
     v = _versions()
-    spot = v["spot"]
-    perp = v["perp"]
-    # Live book first. If spot is retired, saying "SPOT vX + PERP vY" implies two
-    # running engines when one is switched off. Driven by SPOT_BOOK_RETIRED so the
-    # label can never disagree with the rest of the deck.
+    stocks, perp, spot = v.get("stocks"), v.get("perp"), v.get("spot")
+    if stocks:
+        # retired labels survive the engine sources being archived (baked
+        # historical fallbacks; parsed values win when present)
+        perp = perp or OKX_PERP_FINAL_VERSION
+        spot = spot or SPOT_FINAL_VERSION
+        retired = " · ".join(x for x in (
+            ("X-PERPS %s (retired)" % perp) if perp else None,
+            ("SPOT %s (retired)" % spot) if spot else None) if x)
+        return "STOCKS %s (LIVE)%s" % (stocks, (" · " + retired) if retired else "")
+    # fallback only if the stocks engine source is unreadable
     if perp and spot:
         if SPOT_BOOK_RETIRED:
             return "X-PERPS %s (LIVE) · SPOT %s (retired)" % (perp, spot)
@@ -234,21 +278,18 @@ def _engine_version():
 
 
 def _engine_header():
-    """One compact line for the sticky header.
+    """One compact line for the sticky header — names ONLY the live engine.
 
-    The header is the only consumer of version/venue/mode, and composing the full
-    strings there produced 179 chars / 1256px — it wrapped into four rows and pushed
-    the page down. Two things in it were also wrong rather than merely long:
-      * "X-PERPS" appeared twice (inside the version string AND inside the venue),
-      * the RETIRED spot engine's version was shown next to the live one, reading as
-        if two engines were current.
-    So the header gets a short line naming only the live engine. Nothing is lost:
-    `version`/`venue`/`mode` stay in the payload for the boot text and the dossier
-    payload, and the spot version is preserved in spot_book.version and printed in
-    the retired record panel.
+    History: composing version + venue + mode here once produced 179 chars /
+    1256px and wrapped into four rows; showing a retired engine's version next
+    to the live one read as if two engines were current. So the header stays
+    short: live version · venue · mode. The retired versions live in
+    engine.spot_book / engine.okx_book and their record panels.
     """
     v = _versions()
-    live = v["perp"] or v["spot"] or "unknown"
+    live = v.get("stocks") or v.get("perp") or v.get("spot") or "unknown"
+    if v.get("stocks"):
+        return "%s · ALPACA US STOCKS · LIVE · LONG-ONLY" % live
     mode = "LIVE · TWO-WAY" if SPOT_BOOK_RETIRED else "LIVE · TWO-WAY + SPOT"
     return "%s · OKX EUROPE (EEA) X-PERPS · %s" % (live, mode)
 
@@ -258,32 +299,119 @@ def _engine_header():
 # for the perp book is a transfer, not a loss).
 LAUNCH_EUR = 147.77
 
-# X-Perp book capital base. Like LAUNCH_EUR, this anchors the perp book's
-# all-time return % to money actually PUT IN — not to a moving equity value.
-# Each entry is (iso UTC timestamp, USDC added). The account-level LAUNCH_EUR is
-# unaffected: moving EUR into USDC is a TRANSFER between books, not a loss.
-#   07:22 book funded   22.4017 USDC (bought with ~EUR 20)
-#   12:06 consolidation +111.7876 USDC (EUR 99.73 converted at 0.89211, the
-#         operator-directed move of the spot bankroll into the two-way book)
-PERP_CAPITAL_EVENTS = (
-    ("2026-10-15T07:22:07+00:00", 22.4017),
-    ("2026-10-15T12:06:30+00:00", 111.7876),
+# ---------------------------------------------------------------------------
+# CAPITAL BASES — one per book. Realized return % is anchored to money actually
+# PUT IN, never to a moving equity value (injections are capital, not P&L).
+# ---------------------------------------------------------------------------
+
+# LIVE book: Alpaca US stocks. The OKX account value was moved to Alpaca at the
+# 2026-11-19 venue cutover (operator directive). Single capital event: the USD
+# actually funded into Alpaca at cutover. Realized return % is anchored to this
+# money-put-in base, never to a moving equity value.
+STOCKS_CAPITAL_EVENTS = (
+    ("2026-11-19T18:47:32+00:00", 123.53),
 )
-PERP_CAPITAL_USD = round(sum(a for _, a in PERP_CAPITAL_EVENTS), 4)
+STOCKS_CAPITAL_USD = round(sum(a for _, a in STOCKS_CAPITAL_EVENTS), 4)
 
 
-def _perp_capital_at(iso_ts):
-    """USDC put into the perp book as of iso_ts. Injections are CAPITAL, not
-    P&L — without this the consolidation would show up as a +498% 'gain'."""
+def _stocks_capital_at(iso_ts):
+    """USD put into the LIVE stocks book as of iso_ts."""
     if not iso_ts:
-        return PERP_CAPITAL_USD
+        return STOCKS_CAPITAL_USD
     base = 0.0
-    for ts, amt in PERP_CAPITAL_EVENTS:
+    for ts, amt in STOCKS_CAPITAL_EVENTS:
         if ts <= iso_ts:
             base += amt
         else:
             break
-    return base or PERP_CAPITAL_USD
+    return base or STOCKS_CAPITAL_USD
+
+
+# RETIRED book: OKX X-Perps (frozen history — kept for the retired record only;
+# the live book no longer uses these). Like LAUNCH_EUR, this anchored the perp
+# book's all-time return % to money actually PUT IN.
+#   07:22 book funded   22.4017 USDC (bought with ~EUR 20)
+#   12:06 consolidation +111.7876 USDC (EUR 99.73 converted at 0.89211, the
+#         operator-directed move of the spot bankroll into the two-way book)
+OKX_CAPITAL_EVENTS = (
+    ("2026-10-15T07:22:07+00:00", 22.4017),
+    ("2026-10-15T12:06:30+00:00", 111.7876),
+)
+OKX_CAPITAL_USD = round(sum(a for _, a in OKX_CAPITAL_EVENTS), 4)
+
+
+def _okx_capital_at(iso_ts):
+    """USDC put into the RETIRED OKX perp book as of iso_ts (history only)."""
+    if not iso_ts:
+        return OKX_CAPITAL_USD
+    base = 0.0
+    for ts, amt in OKX_CAPITAL_EVENTS:
+        if ts <= iso_ts:
+            base += amt
+        else:
+            break
+    return base or OKX_CAPITAL_USD
+
+
+# ---------------------------------------------------------------------------
+# RETIRED OKX X-PERPS — FINAL RECORD (baked static summary).
+# Computed 2026-11-19 from the full OKX-era engine perp_log.jsonl
+# (13,443 events, 2026-10-15T07:22Z → 2026-11-19T17:01Z) BEFORE the venue
+# cutover, so the deck keeps the honest final numbers even though the live
+# log file now carries Alpaca telemetry. Method: every perp_close +
+# perp_close_detected with dry != true (426 closes; 108 managed + 318
+# server-side), each paired to its perp_open for the notional when the close
+# event itself lacks notional_usd (258 of 426 do).
+#   gross      = sum(upc/100 * notional_usd)               =  -4.6855 USD
+#   close fees = sum(abs(realized_fee)) over closes        =  11.9053 USD
+#   entry fees = sum(abs(realized_fee)) over paired opens  =  10.0890 USD
+#   net_approx = gross - close fees (task formula)         = -16.5908 USD
+#   net        = gross - close fees - entry fees (ledger)  = -26.6798 USD
+# Win rate from upc > 0: 174 wins / 426 = 40.8%.
+# The OKX history files themselves are NOT deleted — they stay in the engine
+# dir / its archive; this block is the deck's frozen summary of them.
+# ---------------------------------------------------------------------------
+OKX_RETIRED_RECORD = {
+    "label": "RETIRED 2026-11-19 — venue moved to Alpaca US stocks (operator directive)",
+    "status": "RETIRED 2026-11-19",
+    "venue": "OKX EUROPE (EEA) · X-PERPS (MiFID, USD-settled, two-way)",
+    "engine_version_final": "v10.0-fade",
+    "first_ts": "2026-10-15T07:22:07.067123+00:00",
+    "last_ts": "2026-11-19T17:01:00.266330+00:00",
+    "first_close_ts": "2026-10-15T09:11:17.075074+00:00",
+    "last_close_ts": "2026-11-19T05:57:42.366000+00:00",
+    "trades_closed": 426,
+    "managed_closes": 108,
+    "server_side_closes": 318,
+    "wins": 174,
+    "losses": 252,
+    "win_rate_pct": 40.8,
+    "longs": 172,
+    "shorts": 254,
+    "gross_usd": -4.69,
+    "fees_close_usd": 11.91,
+    "fees_entry_usd": 10.09,
+    "fees_all_usd": 21.99,
+    # task-formula approximation (close-side fees only) and the full ledger net
+    "net_usd_approx": -16.59,
+    "net_usd": -26.68,
+    "capital_usd": OKX_CAPITAL_USD,
+    "net_pct_approx": round(100 * -16.5908 / OKX_CAPITAL_USD, 2),
+    "net_pct": round(100 * -26.6798 / OKX_CAPITAL_USD, 2),
+    "long_net_usd": -36.27,
+    "short_net_usd": 9.59,
+    "best_trade": {"inst": "IRYS-USD_UM_XPERP-310530", "upc": 24.65},
+    "worst_trade": {"inst": "CL-USD_UM_XPERP-310509", "upc": -8.39},
+    "why": ("Operator directive 2026-11-19: trade real US stocks on Alpaca, "
+            "deciding on fresh stock-news headlines. The OKX account value was "
+            "moved to Alpaca; the X-Perp engine's timer is disabled and its "
+            "kill switch set. Engine code and full history retained."),
+    "note": ("Net figures are realized, net of fees. 'approx' counts close-side "
+             "fees only (the published approximation); 'net' also counts entry "
+             "fees and is the honest ledger number. No demonstrated edge "
+             "survived the OKX era: the v9 Jev scalp and the v10 fade book both "
+             "finished negative at their kill-gates."),
+}
 
 
 ENGINE = {
@@ -291,26 +419,36 @@ ENGINE = {
     # Compact one-liner for the sticky header — see _engine_header() for why the
     # header must not compose version + venue + mode itself.
     "header": _engine_header(),
-    # 10-15: the operator consolidated the account into the two-way book — EUR was
-    # converted to USDC and the spot engine's timer was DISABLED (not deleted; the
-    # code and its 132-trade record stay). So: one live book, X-Perps only.
-    "venue": "OKX EUROPE (EEA) · X-PERPS",
+    # 2026-11-19: VENUE CHANGE (operator directive). The live book is now Alpaca
+    # US stocks — long-only, news-driven. Both OKX books (spot EUR, X-Perps) are
+    # retired history; their code and records stay on the deck.
+    "venue": "ALPACA · US STOCKS",
     "cycle_s": 300,
-    "quote": "USDC",
-    "decision_model": "TypeSafe jev-latest (decisions) + halogen (desk text)",
+    "quote": "USD",
+    "decision_model": "halogen-qwen3.8-flash-next — typed JSON news decisions (deterministic code gates own risk)",
     "desk_model": LLM_MODEL,
-    "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — TWO-WAY (LONG+SHORT)",
+    "mode": "LIVE CAPITAL — FULLY AUTONOMOUS — LONG-ONLY (NEWS-DRIVEN)",
+    "okx_book": {
+        "status": OKX_RETIRED_RECORD["status"],
+        # Parsed from the retired engine's source when it is still present;
+        # the baked final version is the fallback (history must survive the
+        # engine dir being archived).
+        "version": _versions()["perp"] or OKX_RETIRED_RECORD["engine_version_final"],
+        "why": OKX_RETIRED_RECORD["why"],
+        "record": OKX_RETIRED_RECORD,
+    },
     "spot_book": {
         "status": "RETIRED 2026-10-15" if SPOT_BOOK_RETIRED else "ACTIVE",
         # Parsed from source so the retired record still names the engine that
         # produced it. This is where the spot version lives now that the header
         # names only the LIVE engine — removing it from the header must not mean
         # losing it from the deck.
-        "version": _versions()["spot"],
+        "version": _versions()["spot"] or SPOT_FINAL_VERSION,
         "why": ("Capital consolidated into the X-Perp book at operator direction. The spot "
                 "EUR book was long-only (no way to profit from a decline) and carried ~0.25% "
                 "round-trip fees vs the perp book's ~0.07%. Engine code and full history "
-                "retained; its systemd timer is disabled, so it no longer trades."),
+                "retained; its systemd timer is disabled, so it no longer trades. The X-Perp "
+                "book itself retired 2026-11-19 when the venue moved to Alpaca US stocks."),
         "trades_closed": None,      # filled from the log by build() — never hardcode,
         "net_eur": None,            # it drifts the moment the engine trades again
         "net_pct": None,
@@ -323,6 +461,15 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def fmt_pct(v, dflt):
+    """Format a parsed engine constant for prose; fall back to the declared
+    default if the source parse failed. Keeps commentary text single-sourced."""
+    try:
+        return "%g" % float(v)
+    except (TypeError, ValueError):
+        return "%g" % float(dflt)
+
+
 def _load_json(path, default=None):
     try:
         with open(path) as f:
@@ -332,19 +479,26 @@ def _load_json(path, default=None):
 
 
 def read_log():
+    """The RETIRED spot book's frozen event stream. After the venue cutover the
+    OKX files may be archived under *_okx_retired names (the stocks engine's
+    docstring declares that pattern), so fall back to the archived name if the
+    original is gone. Never reads the live stocks log — that is read_perp_log."""
     events = []
-    try:
-        with open(LOG_PATH, errors="replace") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    events.append(json.loads(line))
-                except Exception:
-                    pass
-    except FileNotFoundError:
-        pass
+    for name in ("okx_jev_log.jsonl", "okx_jev_log_okx_retired.jsonl"):
+        try:
+            with open(os.path.join(BASE, name), errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except Exception:
+                        pass
+        except FileNotFoundError:
+            continue
+        if events:
+            break
     return events
 
 
@@ -370,6 +524,28 @@ def read_perp_log():
     except FileNotFoundError:
         pass
     return events
+
+
+def read_stocks_news():
+    """Fresh stock-news headlines written by the LIVE engine each scan.
+
+    Contract (stocks_news.json): a JSON list of up to 12 objects
+        [{"ts": <iso utc>, "headline": str, "symbols": [str, ...],
+          "source": str, "url": str}, ...]
+    newest first. The file may be ABSENT (engine not yet updated to write it,
+    or first scan pending) — return [] then, never crash. Malformed entries
+    are skipped individually."""
+    raw = _load_json(os.path.join(BASE, "stocks_news.json"), None)
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for n in raw:
+        if not isinstance(n, dict) or not n.get("headline"):
+            continue
+        out.append({"ts": n.get("ts"), "headline": str(n.get("headline")),
+                    "symbols": [str(s) for s in (n.get("symbols") or []) if s],
+                    "source": n.get("source") or "wire", "url": n.get("url") or ""})
+    return out[:12]
 
 
 def _chosen_funding(e, base):
@@ -407,7 +583,9 @@ def normalize_perp_events(pevents):
             out.append(dict(e, event="open", ccy="USD",
                             stake=e.get("notional_usd"),
                             qty=e.get("contracts"),
-                            entry_type="maker"))
+                            # stocks engine fills are MARKET (fractional shares);
+                            # the OKX era was maker-first. Use the logged type.
+                            entry_type=e.get("entry_type") or "maker"))
         elif ev == "perp_close":
             out.append(dict(e, event="close", ccy="USD",
                             stake_eur=e.get("notional_usd"),
@@ -474,15 +652,32 @@ def normalize_perp_events(pevents):
             out.append(dict(e, event="entry_unfilled", ccy="USD"))
         elif ev == "perp_cooldown_skip":
             out.append(dict(e, event="cooldown_skip", ccy="USD", min=e.get("mins")))
+        # --- stocks-era events (alpaca_stocks.py) — same adapter, new vocabulary.
+        # perp_dry_open/perp_dry_close stay unmapped (dry telemetry must not
+        # count as trades), exactly as in the OKX era.
+        elif ev == "stocks_exit_signal":
+            out.append(dict(e, event="exit_signal", ccy="USD"))
+        elif ev == "stocks_exit_deferred":
+            out.append(dict(e, event="exit_deferred", ccy="USD"))
+        elif ev == "news_llm_err":
+            out.append(dict(e, event="llm_err", ccy="USD"))
+        elif ev == "breaker_fire":
+            out.append(dict(e, event="daily_breaker", ccy="USD"))
+        elif ev == "breaker_clear":
+            out.append(dict(e, event="breaker_clear", ccy="USD"))
+        elif ev == "perp_skip":
+            out.append(dict(e, event="skip", ccy="USD", why=e.get("why")))
+        elif ev == "stocks_orphan_adopted":
+            out.append(dict(e, event="orphan_adopted", ccy="USD"))
     return out
 
 
 def build_round_trips(events, ccy="EUR", capital_base=None):
     """Pair open -> close/close_detected per instrument, chronologically.
 
-    ccy/capital_base let the SAME logic serve both books: spot amounts are EUR
-    against LAUNCH_EUR, live perp amounts are USD against PERP_CAPITAL_USD. The
-    `*_eur` key names are historical identifiers — read them as "book currency".
+    ccy/capital_base let the SAME logic serve every book: spot amounts are EUR
+    against LAUNCH_EUR, live stocks amounts are USD against STOCKS_CAPITAL_USD.
+    The `*_eur` key names are historical identifiers — read them as "book currency".
     """
     if capital_base is None:
         capital_base = LAUNCH_EUR
@@ -554,9 +749,10 @@ def build_round_trips(events, ccy="EUR", capital_base=None):
 
 def build_stats(trips, events, ccy="EUR", capital_base=None, capital_base_fn=None):
     """Aggregate a book's closed trades. ccy/capital_base select the book:
-    spot = EUR vs LAUNCH_EUR, live perp = USD vs PERP_CAPITAL_USD. The `*_eur`
-    key names are historical identifiers, not a currency claim — `ccy` says which
-    symbol the UI must print, so the perp book never renders '$131' as '€131'.
+    spot = EUR vs LAUNCH_EUR, live stocks = USD vs STOCKS_CAPITAL_USD. The
+    `*_eur` key names are historical identifiers, not a currency claim — `ccy`
+    says which symbol the UI must print, so the stocks book never renders
+    '$131' as '€131'.
 
     capital_base_fn(ts) -> base at that time. Needed whenever capital was added
     mid-history: dividing early trades by today's larger base understates them.
@@ -641,12 +837,21 @@ def build_stats(trips, events, ccy="EUR", capital_base=None, capital_base_fn=Non
     # exit-reason breakdown
     def exit_cat(t):
         r = (t.get("reason") or "").lower()
+        # stocks engine (v11.0-news): engine-managed TP/SL + 48h time exit
+        if r.startswith("tp "):
+            return "TP EXIT"
+        if r.startswith("sl "):
+            return "SL EXIT"
+        if "time exit" in r:
+            return "TIME EXIT"
         if "trail" in r:
             return "TRAIL EXIT"
         if "time-stop" in r:
             return "TIME STOP"
         if "stale" in r:
             return "STALE EXIT"
+        if "rebalance" in r:
+            return "REBALANCE"
         if "server-side" in r or t.get("exit_kind") == "server-oco":
             return "OCO TAKE-PROFIT" if (t.get("upc") or 0) >= 0 else "OCO STOP-LOSS"
         return "OTHER"
@@ -695,7 +900,16 @@ def build_stats(trips, events, ccy="EUR", capital_base=None, capital_base_fn=Non
 
 
 def build_scatter(events):
-    """One dot per Jev buy-vote: x=margin, y=noul, outcome from the trade it caused."""
+    """One dot per model buy-vote, outcome from the trade it caused.
+
+    Two shapes:
+    * OKX era (retired): x=margin p(chosen)−p(no_trade), y=noul. The old logs
+      carried an explicit no_trade probability, so the margin is real.
+    * Stocks era (live): the halogen news call emits ONLY a confidence (no
+      no_trade probability exists — inventing one would be a fabricated
+      number). So x=confidence, y=the day move at decision time (the chase /
+      knife context the code gates check). app.js renders the matching axes.
+    """
     opens = [e for e in events if e.get("event") == "open"]
     closes = [e for e in events if e.get("event") in ("close", "close_detected")]
     pts = []
@@ -706,21 +920,37 @@ def build_scatter(events):
         choice = ba.get("choice")
         if not choice or choice == "no_trade":
             continue
-        probs = ba.get("probabilities") or {}
-        p_no = probs.get("no_trade")
-        p_c = probs.get(choice)
-        if p_c is None or p_no is None:
-            continue
         m = re.match(r"(?:buy|long|short)_(.+)", choice)
         if not m:
             continue
         base = m.group(1)
-        inst = None
-        for k in (e.get("state") or {}).get("pairs") or {}:
-            if k.split("-")[0].lower() == base:
-                inst = k
-                break
-        noul = ((e.get("answers") or {}).get("p_up_%s" % base) or {}).get("noul")
+        is_stocks = e.get("engine") == "stocks"
+        probs = ba.get("probabilities") or {}
+        if is_stocks:
+            conf = ba.get("confidence")
+            if conf is None:
+                continue
+            inst = base.upper()      # stocks inst IS the symbol
+            day_chg = None
+            for p in ((e.get("state") or {}).get("pairs") or {}).values():
+                if str(p.get("inst", "")).upper() == inst:
+                    day_chg = p.get("day_chg_pct")
+                    break
+            margin = noul = None
+        else:
+            p_no = probs.get("no_trade")
+            p_c = probs.get(choice)
+            if p_c is None or p_no is None:
+                continue
+            inst = None
+            for k in (e.get("state") or {}).get("pairs") or {}:
+                if k.split("-")[0].lower() == base:
+                    inst = k
+                    break
+            noul = ((e.get("answers") or {}).get("p_up_%s" % base) or {}).get("noul")
+            margin = round(p_c - p_no, 3)
+            conf = ba.get("confidence")
+            day_chg = None
         jts = parse_ts(e.get("ts", ""))
         if not inst or not jts:
             continue
@@ -737,20 +967,21 @@ def build_scatter(events):
         net = None
         if fired:
             ots = parse_ts(fired.get("ts", ""))
-            # find its close
+            # stocks holds run up to 48h (time exit); OKX scalps closed <6h
+            max_hold_s = (50 * 3600) if is_stocks else (6 * 3600)
             for c in closes:
                 if c.get("inst") != inst:
                     continue
                 cts = parse_ts(c.get("ts", ""))
-                if cts and ots and cts >= ots and (cts - ots).total_seconds() < 6 * 3600:
+                if cts and ots and cts >= ots and (cts - ots).total_seconds() < max_hold_s:
                     outcome = "win" if (c.get("upc") or 0) > 0 else "loss"
                     net = c.get("upc")
                     break
             else:
                 outcome = "open"
-        pts.append({"ts": e.get("ts"), "inst": inst, "margin": round(p_c - p_no, 3),
-                    "noul": noul, "conf": ba.get("confidence"), "outcome": outcome,
-                    "upc": net})
+        pts.append({"ts": e.get("ts"), "inst": inst, "margin": margin,
+                    "noul": noul, "conf": conf, "day_chg_pct": day_chg,
+                    "outcome": outcome, "upc": net})
     return pts[-120:]
 
 
@@ -790,7 +1021,10 @@ def build_funnel(events, universe):
             u = e.get("usage") or {}
             tok_in += u.get("input_tokens") or 0
             tok_out += u.get("output_tokens") or 0
-            if str(e.get("model") or "").startswith("halogen"):   # v9.0: halogen=self-hosted; jev-*/no-model=TypeSafe
+            # stocks-era calls carry engine="stocks" and no model field — they
+            # are ALL self-hosted halogen ($0). Without this branch every live
+            # call would be miscounted as paid legacy TypeSafe spend.
+            if str(e.get("model") or "").startswith("halogen") or e.get("engine") == "stocks":
                 halogen_calls += 1
                 if (ts or "").startswith(today):
                     halogen_calls_today += 1
@@ -902,25 +1136,36 @@ def _side(e):
 
 
 TAPE_FMT = {
-    "open": lambda e: ("OPEN", "%sOPEN %s  qty %s @ %s  notional %s%s  conf %s margin %s noul %s [%s]" % (
+    "open": lambda e: ("OPEN", "%sOPEN %s  qty %s @ %s  notional %s%s  conf %s%s [%s]" % (
         "▲ " if (e.get("side") or "").lower() != "short" else "▼ ",
         e.get("inst"), e.get("qty"), e.get("fill_px"), _sym(e), e.get("stake"),
-        e.get("conf"), e.get("margin"), e.get("noul"), e.get("entry_type", "-"))),
+        e.get("conf"),
+        # OKX logged margin/noul; the stocks news call has neither — show the
+        # headline instead of printing "None None".
+        ("  «%s»" % str(e.get("headline"))[:60]) if e.get("engine") == "stocks" and e.get("headline")
+        else (" margin %s noul %s" % (e.get("margin"), e.get("noul"))),
+        e.get("entry_type", "-"))),
     "close": lambda e: ("CLOSE", "▼ CLOSE %s %s %+.2f%%  %s%s  after %sm — %s" % (
         e.get("inst"), _side(e), e.get("upc", 0), _sym(e),
         round((e.get("stake_eur") or 0), 2) if e.get("stake_eur") else "-",
         e.get("age_min", "?"), e.get("reason", ""))),
-    "close_detected": lambda e: ("CLOSE", "▼ EXIT %s %s %+.2f%% — server-side OCO fired" % (
-        e.get("inst"), _side(e), e.get("upc", 0))),
+    "close_detected": lambda e: ("CLOSE", "▼ EXIT %s %s %+.2f%% — %s" % (
+        e.get("inst"), _side(e), e.get("upc") or 0,
+        e.get("note") or ("server-side OCO fired" if e.get("engine") != "stocks"
+                          else "position closed externally — reconciled"))),
     "trail_armed": lambda e: ("TRAIL", "◈ TRAIL ARMED %s  hwm +%.2f%%  callback %.3f%%  active @ %s" % (
         e.get("inst"), e.get("hwm_pct", 0), 100 * (e.get("callBackRatio") or 0), e.get("activePx"))),
     "jev": None,  # special-cased
-    "no_trade": lambda e: ("JEV", "JEV → NO-TRADE (%s)" % e.get("why", "")),
+    "no_trade": lambda e: (("MODEL", "MODEL → NO-TRADE (%s)") if e.get("engine") == "stocks" else ("JEV", "JEV → NO-TRADE (%s)")) % (e.get("why", ""),),
     "quality_gate_reject": lambda e: ("GATE", "GATE REJECT %s: %s" % (
         e.get("inst"), "; ".join(e.get("fails", [])))),
-    "universe_scan": lambda e: ("SCAN", "UNIVERSE SCAN %s %s → %s candidates → top: %s" % (
-        e.get("n_eur"), ("X-PERP CONTRACTS" if e.get("ccy") == "USD" else "EUR PAIRS"),
-        e.get("n_candidates"), ",".join(str(x)[:24] for x in (e.get("selected") or [])[:5]))),
+    "universe_scan": lambda e: ("SCAN", "UNIVERSE SCAN %s %s → %s candidates%s" % (
+        e.get("n_eur"), ("US STOCKS" if e.get("engine") == "stocks"
+                         else ("X-PERP CONTRACTS" if e.get("ccy") == "USD" else "EUR PAIRS")),
+        e.get("n_candidates"),
+        (" · movers: " + ", ".join("%s %+.1f%%" % (m[0], m[1]) for m in (e.get("top") or [])[:4]))
+        if e.get("engine") == "stocks"
+        else (" → top: " + ",".join(str(x)[:24] for x in (e.get("selected") or [])[:5])))),
     "universe_depth_reject": lambda e: ("GATE", "DEPTH REJECT %s — top5 book %s%s < floor" % (
         e.get("inst"), _sym(e), e.get("depth_eur"))),
     # cooldown_skip has TWO field shapes in the spot log (305 events use
@@ -929,7 +1174,7 @@ TAPE_FMT = {
     "cooldown_skip": lambda e: ("RISK", "COOLDOWN %s — re-entry locked %sm after %s" % (
         e.get("inst"), e.get("left_min") if e.get("left_min") is not None else e.get("min"),
         e.get("after") or "exit")),
-    "entry_unfilled": lambda e: ("FILL", "MAKER ENTRY UNFILLED %s — cancelled, no chase" % e.get("inst")),
+    "entry_unfilled": lambda e: ("FILL", "ENTRY UNFILLED %s — cancelled, no chase" % e.get("inst")),
     "day_roll": lambda e: ("DAY", "═ DAY ROLL %s — opening equity %s%s" % (
         e.get("day"), _sym(e), e.get("start_equity_eur"))),
     "daily_breaker": lambda e: ("ALERT", "‼ DAILY LOSS BREAKER TRIPPED — entries halted until UTC midnight"),
@@ -939,6 +1184,17 @@ TAPE_FMT = {
     "close_dust": lambda e: ("DUST", "DUST CLEANUP %s" % e.get("inst")),
     "jev_pair_cap": lambda e: ("JEV", "JEV PAIR CAP — dropped lowest-ranked candidates"),
     "prompt_budget_warn": lambda e: ("JEV", "PROMPT BUDGET WARN — state trimmed"),
+    # --- stocks-era tape rows (alpaca_stocks.py vocabulary) ---
+    "exit_signal": lambda e: ("EXIT", "◈ EXIT SIGNAL %s %+.2f%% — %s" % (
+        e.get("inst"), e.get("upc") or 0, e.get("reason") or "")),
+    "exit_deferred": lambda e: ("EXIT", "◈ EXIT DEFERRED %s %+.2f%% — %s (market closed; executes at next open)" % (
+        e.get("inst"), e.get("upc") or 0, e.get("reason") or "")),
+    "llm_err": lambda e: ("ALERT", "⚠ NEWS LLM FAIL-CLOSED %s — no_trade (%s)" % (
+        e.get("inst"), str(e.get("err") or "")[:80])),
+    "breaker_clear": lambda e: ("DAY", "═ DAILY BREAKER AUTO-CLEARED — UTC rollover"),
+    "skip": lambda e: ("RISK", "CYCLE SKIP — %s" % (e.get("why") or "")),
+    "orphan_adopted": lambda e: ("RISK", "ORPHAN POSITION ADOPTED %s qty %s — engine now manages its TP/SL" % (
+        e.get("inst"), e.get("contracts"))),
 }
 
 
@@ -954,10 +1210,19 @@ def build_tape(events, limit=90):
             ba = ans.get("best_action") or {}
             probs = ba.get("probabilities") or {}
             choice = ba.get("choice", "?")
-            txt = "JEV CALL → %s  conf %s  p[%s]" % (
-                choice.upper(), ba.get("confidence"),
-                " ".join("%s=%.2f" % (k, v) for k, v in sorted(probs.items(), key=lambda kv: -kv[1])[:4]))
-            kind = "JEV"
+            if e.get("engine") == "stocks":
+                kind = "MODEL"
+                sym = (e.get("chosen_inst") or "").upper()
+                rat = (e.get("rationale") or "")[:80]
+                if choice == "no_trade":
+                    txt = "HALOGEN → NO-TRADE%s  conf %s · %s" % ((" " + sym) if sym else "", ba.get("confidence"), rat)
+                else:
+                    txt = "HALOGEN → %s  conf %s · %s" % (choice.replace("buy_", "BUY ").upper(), ba.get("confidence"), rat)
+            else:
+                txt = "JEV CALL → %s  conf %s  p[%s]" % (
+                    choice.upper(), ba.get("confidence"),
+                    " ".join("%s=%.2f" % (k, v) for k, v in sorted(probs.items(), key=lambda kv: -kv[1])[:4]))
+                kind = "JEV"
         elif ev == "close":
             fmt = TAPE_FMT[ev]
             kind, txt = "CLOSE", ("▼ CLOSE %s  %+.2f%%  after %sm — %s" % (
@@ -977,9 +1242,9 @@ def build_tape(events, limit=90):
             color = "green" if upc >= 0 else "red"
         elif kind in ("ALERT",):
             color = "red"
-        elif kind in ("JEV",):
+        elif kind in ("JEV", "MODEL"):
             color = "amber"
-        elif kind in ("SCAN", "TRAIL", "DAY"):
+        elif kind in ("SCAN", "TRAIL", "DAY", "EXIT"):
             color = "cyan"
         tape.append({"ts": ts, "kind": kind, "text": txt, "color": color, "event": ev})
     return tape[-limit:][::-1]
@@ -1000,17 +1265,19 @@ def make_debrief(dossier):
         "vote": {"choice": dec.get("choice"), "conf": dec.get("confidence"),
                  "margin": None, "noul": dec.get("noul"),
                  "probs": dec.get("probabilities")},
+        "headline": dec.get("headline"), "impact": dec.get("impact"),
         "mkt_30m": (dec.get("pair_state") or {}).get("chg_30min_pct"),
+        "day_chg_pct": (dec.get("pair_state") or {}).get("day_chg_pct"),
         "mkt_7d": (dec.get("pair_state") or {}).get("chg_7d_pct"),
         "fear_greed": fg.get("value"),
         "timeline": [e.get("event") for e in dossier.get("timeline", [])],
     }, separators=(",", ":"))
     prompt = (
-        "You are the post-mortem voice of OBEKT TERMINAL, the dashboard of a LIVE autonomous crypto "
-        "scalper trading REAL capital. "
+        "You are the post-mortem voice of OBEKT TERMINAL, the dashboard of a LIVE autonomous US-stock "
+        "news trader (Alpaca, long-only, fractional shares, real capital). "
         "One closed trade, raw telemetry:\n" + snap + "\n"
         "Write ONE debrief line, max 150 chars, ALL-CAPS terminal voice: name what worked or failed "
-        "(entry timing, exit engine, model vote vs outcome) using ONLY these facts. No advice, no filler. "
+        "(news catalyst, entry timing, engine-managed TP/SL exit, model confidence vs outcome) using ONLY these facts. No advice, no filler. "
         'Reply with the line alone, no JSON, no quotes.'
     )
     key = os.environ.get(LLM_KEY_ENV, "")
@@ -1038,33 +1305,40 @@ def make_debrief(dossier):
 
 
 def fetch_trade_candles(inst, ts_open, ts_close, bar="5m"):
-    """OHLC 5m candles covering a trade window (+pad). One keyless call.
-    NB: OKX history-candles `after=<ms>` returns the 100 candles ENDING at that ms
-    (same inversion quirk as the econ calendar), so anchor `after` past the close."""
+    """OHLC 5m candles covering a trade window (+pad). Keyless Yahoo Finance
+    chart API with period1/period2 (replaced the OKX history-candles endpoint
+    at the 2026-11-19 venue change). Yahoo keeps 5m data ~60 days, which covers
+    every live stocks trade (max hold 48h). Returns [ts_ms,o,h,l,c] oldest→newest;
+    [] on any failure so a dossier never blocks on the chart."""
     if not (ts_open and ts_close):
         return []
-    hi = int((ts_close + timedelta(minutes=45)).timestamp() * 1000)
-    lo = int((ts_open - timedelta(minutes=45)).timestamp() * 1000)
-    url = ("https://eea.okx.com/api/v5/market/history-candles?instId=%s&bar=%s&limit=100&after=%d"
-           % (urllib.parse.quote(inst), bar, hi))
+    hi = int((ts_close + timedelta(minutes=45)).timestamp())
+    lo = int((ts_open - timedelta(minutes=45)).timestamp())
+    url = ("https://query1.finance.yahoo.com/v8/finance/chart/%s?interval=5m&period1=%d&period2=%d"
+           % (urllib.parse.quote(inst), lo, hi))
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "jev-terminal/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (obekt-terminal)"})
         with urllib.request.urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
+        res = (data.get("chart") or {}).get("result") or []
+        if not res:
+            return []
+        ts = res[0].get("timestamp") or []
+        q = ((res[0].get("indicators") or {}).get("quote") or [{}])[0]
+        out = []
+        for i, t in enumerate(ts):
+            try:
+                o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
+                if None in (o, h, l, c):
+                    continue
+                out.append([int(t) * 1000, float(o), float(h), float(l), float(c)])
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+        out.sort(key=lambda x: x[0])
+        return out
     except Exception as ex:
         print("candle fetch failed %s: %s" % (inst, ex), file=sys.stderr)
         return []
-    out = []
-    for row in data.get("data") or []:
-        try:
-            ts = int(row[0])
-        except (ValueError, IndexError):
-            continue
-        if not (lo <= ts <= hi):
-            continue
-        out.append([ts, float(row[1]), float(row[2]), float(row[3]), float(row[4])])  # ts,o,h,l,c
-    out.sort(key=lambda x: x[0])
-    return out
 
 
 DOSSIER_CANDLE_BACKFILL = 8  # cached dossiers get their chart backfilled, capped per run
@@ -1074,7 +1348,9 @@ DOSSIER_CANDLE_BACKFILL = 8  # cached dossiers get their chart backfilled, cappe
 # marked complete=True is otherwise served forever even after a fix. That is
 # exactly what stranded the perp dossiers at timeline=0 once build_dossier
 # started reading the live log — the cache had the pre-fix empty result.
-DOSSIER_SCHEMA = 2
+# v3: venue change — stocks decisions carry headline/impact/rationale instead
+# of funding/fear&greed context.
+DOSSIER_SCHEMA = 3
 
 
 def build_dossier(trip, events, jev_events, debrief_budget=0, candle_budget=0):
@@ -1198,6 +1474,10 @@ def build_dossier(trip, events, jev_events, debrief_budget=0, candle_budget=0):
             "noul": (answers.get("p_up_%s" % base) or {}).get("noul"),
             "margin": margin,
             "pair_state": pair_state,
+            # stocks-era decision context: the headline IS the signal
+            "headline": pair_state.get("headline") or (trigger or {}).get("headline"),
+            "impact": pair_state.get("impact"),
+            "rationale": (trigger or {}).get("rationale"),
             "all_pairs": {k: v for k, v in (state.get("pairs") or {}).items()},
             "cash_eur": state.get("cash_eur"),
             "stake_eur": state.get("stake_eur"),
@@ -1261,6 +1541,12 @@ def build_jev_latest(events):
             "range30_pos_pct": p.get("range30_pos_pct"),
             "spread_pct": p.get("spread_pct"),
             "bracket": p.get("bracket"),
+            # stocks-era pair context (None for the retired OKX/spot shapes)
+            "day_chg_pct": p.get("day_chg_pct"),
+            "headline": p.get("headline"),
+            "impact": p.get("impact"),
+            "target_pct": p.get("target_pct"),
+            "stop_pct": p.get("stop_pct"),
         })
     rows.sort(key=lambda r: -(r.get("p_buy") or 0))
     choice = ba.get("choice", "no_trade")
@@ -1278,25 +1564,64 @@ def build_jev_latest(events):
                     chosen_inst = inst
                     chosen_noul = (ans.get("p_up_%s" % base) or {}).get("noul")
                     break
-    # engine bars: PARSED FROM ENGINE SOURCE (single source of truth — these
-    # were hardcoded 0.25/0.45 and drifted from the engine, which actually runs
-    # MARGIN_BAR=0.30 + a CONJUNCTIVE CONF_FLOOR since v3.8:
+    # Engine bars: PARSED FROM ENGINE SOURCE (single source of truth).
+    # Stocks era (live): the halogen news call is scored against CONF_FLOOR +
+    # the impact gate from alpaca_stocks.py — there is no margin/noul concept.
+    # OKX/spot era (retired panels): the historical conjunctive bar
     #   edge_ok = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
     #   fire    = edge_ok and noul >= NOUL_BAR
-    MBAR, CBAR, CFLOOR, NBAR = _engine_bars(
-        "okx_perp.py" if latest.get("ccy") == "USD" else "okx_jev.py")
     conf = ba.get("confidence")
-    if chosen_inst:
-        bar_margin = (margin is not None and margin >= MBAR)
-        bar_conf = (conf is not None and conf >= CBAR)
-        conf_floor_ok = (conf is not None and conf >= CFLOOR)
-        bar_noul = (chosen_noul is not None and chosen_noul >= NBAR)
-        fired = (bar_margin or bar_conf) and conf_floor_ok
-        verdict_ok = bool(fired and bar_noul)
+    is_stocks = latest.get("engine") == "stocks"
+    if is_stocks:
+        try:
+            _src = open(os.path.join(BASE, LIVE_ENGINE)).read(32768)
+            _m = re.search(r'^CONF_FLOOR\s*=\s*([0-9.]+)', _src, re.M)
+            CFLOOR = float(_m.group(1)) if _m else 0.60
+        except Exception:
+            CFLOOR = 0.60
+        MBAR = CBAR = NBAR = None
+        impact = None
+        for p in (pairs or {}).values():
+            if p.get("impact"):
+                impact = p.get("impact")
+                break
+        if chosen_inst:
+            bar_conf = (conf is not None and conf >= CFLOOR)
+            impact_ok = impact in ("high", "medium")
+            fired = bool(bar_conf and impact_ok)
+            bar_margin = bar_noul = None
+            conf_floor_ok = bar_conf
+            verdict_ok = fired
+        else:
+            bar_margin = bar_conf = bar_noul = None
+            conf_floor_ok = None
+            impact_ok = None
+            fired = False
+            verdict_ok = False
+        criteria = {"margin_bar": None, "conf_bar": None, "conf_floor": CFLOOR,
+                    "noul_bar": None, "margin_ok": bar_margin, "conf_ok": bar_conf,
+                    "noul_ok": bar_noul, "conf_floor_ok": conf_floor_ok,
+                    "impact": impact, "impact_ok": impact_ok,
+                    "fire": verdict_ok, "book": "stocks",
+                    "engine_source": LIVE_ENGINE}
     else:
-        bar_margin = bar_conf = bar_noul = None
-        fired = False
-        verdict_ok = False
+        MBAR, CBAR, CFLOOR, NBAR = _engine_bars(
+            "okx_perp.py" if latest.get("ccy") == "USD" else "okx_jev.py")
+        if chosen_inst:
+            bar_margin = (margin is not None and margin >= MBAR)
+            bar_conf = (conf is not None and conf >= CBAR)
+            conf_floor_ok = (conf is not None and conf >= CFLOOR)
+            bar_noul = (chosen_noul is not None and chosen_noul >= NBAR)
+            fired = (bar_margin or bar_conf) and conf_floor_ok
+            verdict_ok = bool(fired and bar_noul)
+        else:
+            bar_margin = bar_conf = bar_noul = None
+            fired = False
+            verdict_ok = False
+        criteria = {"margin_bar": MBAR, "conf_bar": CBAR, "conf_floor": CFLOOR,
+                    "noul_bar": NBAR,
+                    "margin_ok": bar_margin, "conf_ok": bar_conf, "noul_ok": bar_noul,
+                    "fire": verdict_ok}
     # what actually happened right after (open OR no_trade veto within 3 min)?
     action = None
     lts = parse_ts(latest.get("ts", ""))
@@ -1329,10 +1654,7 @@ def build_jev_latest(events):
         "noul": chosen_noul,
         "probabilities": probs,
         "pairs": rows,
-        "criteria": {"margin_bar": MBAR, "conf_bar": CBAR, "conf_floor": CFLOOR,
-                     "noul_bar": NBAR,
-                     "margin_ok": bar_margin, "conf_ok": bar_conf, "noul_ok": bar_noul,
-                     "fire": verdict_ok},
+        "criteria": criteria,
         "action": action,
         "tokens": {"in": usage.get("input_tokens"), "out": usage.get("output_tokens"),
                    "state_chars": ps.get("state_chars"), "n_pairs": ps.get("n_pairs")},
@@ -1340,6 +1662,10 @@ def build_jev_latest(events):
         "stake_eur": state.get("stake_eur"),
         "funding_bps": state.get("market_funding_bps"),
         "open_positions": state.get("open_positions") or [],
+        # stocks-era context (None for retired shapes)
+        "headline": latest.get("headline"),
+        "rationale": latest.get("rationale"),
+        "engine": latest.get("engine"),
     }
 
 
@@ -1363,52 +1689,69 @@ def build_jev_history(events, limit=40):
             "margin": round(p_c - p_no, 3) if (p_c is not None and p_no is not None) else None,
             "noul": noul,
             "tok": (e.get("usage") or {}).get("input_tokens"),
+            "engine": e.get("engine"),
+            "impact": next((p.get("impact") for p in ((e.get("state") or {}).get("pairs") or {}).values()
+                            if p.get("impact")), None),
         })
     return out[-limit:][::-1]
 
 
+def _yahoo_chart(sym, params):
+    """One keyless Yahoo Finance chart call. Returns the first result dict or
+    None. Replaced the OKX public ticker/candle endpoints at the 2026-11-19
+    venue change — the deck now tracks US stocks, so the market feed must too."""
+    url = "https://query1.finance.yahoo.com/v8/finance/chart/%s?%s" % (
+        urllib.parse.quote(sym), params)
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (obekt-terminal)"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read().decode())
+    res = (data.get("chart") or {}).get("result") or []
+    return res[0] if res else None
+
+
 def fetch_tickers(extra_insts=()):
-    url = "https://eea.okx.com/api/v5/market/tickers?instType=SPOT"
-    wanted = set(MARQUEE_INSTS) | set(extra_insts)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "jev-terminal/1.0"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            data = json.loads(r.read().decode())
-        rows = {}
-        for t in data.get("data", []):
-            inst = t.get("instId")
-            if inst not in wanted:
+    """Stock marquee quotes (keyless Yahoo Finance, cached in ticker_cache).
+    chg24h_pct is the regular-session day change vs previous close — the stock
+    equivalent of the old 24h crypto change. Key names are kept for the UI."""
+    wanted = list(dict.fromkeys(list(MARQUEE_INSTS) + list(extra_insts)))
+    rows = {}
+    for sym in wanted:
+        try:
+            res = _yahoo_chart(sym, "interval=1d&range=5d")
+            meta = (res or {}).get("meta") or {}
+            last = float(meta.get("regularMarketPrice") or 0)
+            prev = float(meta.get("chartPreviousClose") or meta.get("previousClose") or 0)
+            if not last:
                 continue
-            last = float(t.get("last") or 0)
-            open24 = float(t.get("open24h") or 0)
-            rows[inst] = {
-                "inst": inst, "last": last,
-                "chg24h_pct": round(100 * (last - open24) / open24, 2) if open24 else None,
-                "high24": float(t.get("high24h") or 0), "low24": float(t.get("low24h") or 0),
-                "vol24h_eur": round(float(t.get("volCcy24h") or 0)),
+            rows[sym] = {
+                "inst": sym, "last": last,
+                "chg24h_pct": round(100 * (last - prev) / prev, 2) if prev else None,
+                "high24": float(meta.get("regularMarketDayHigh") or 0),
+                "low24": float(meta.get("regularMarketDayLow") or 0),
+                "vol24h_eur": int(meta.get("regularMarketVolume") or 0),  # historical key; shares
             }
-        if rows:
-            out = [rows[i] for i in MARQUEE_INSTS if i in rows]
-            with open(TICKER_CACHE, "w") as f:
-                json.dump({"ts": time.time(), "tickers": out, "px": {i: rows[i]["last"] for i in rows}}, f)
-            return out, {i: rows[i]["last"] for i in rows}
-    except Exception as ex:
-        print("ticker fetch failed: %s" % ex, file=sys.stderr)
+        except Exception as ex:
+            print("ticker fetch failed %s: %s" % (sym, ex), file=sys.stderr)
+    if rows:
+        out = [rows[i] for i in MARQUEE_INSTS if i in rows]
+        # keep any extra (open-position) symbols too, for the position panel
+        out += [rows[i] for i in wanted if i not in MARQUEE_INSTS and i in rows]
+        with open(TICKER_CACHE, "w") as f:
+            json.dump({"ts": time.time(), "tickers": out,
+                       "px": {i: rows[i]["last"] for i in rows}}, f)
+        return out, {i: rows[i]["last"] for i in rows}
     c = _load_json(TICKER_CACHE) or {}
     return c.get("tickers", []), c.get("px", {})
 
 
 def fetch_candles(inst, bar="5m", limit=36):
-    """Last N 5m candles for an inst (keyless public). Returns [close,...] oldest→newest."""
-    url = ("https://eea.okx.com/api/v5/market/candles?instId=%s&bar=%s&limit=%d"
-           % (urllib.parse.quote(inst), bar, limit))
+    """Last N 5m closes for a stock symbol (keyless Yahoo Finance). Returns
+    [close,...] oldest→newest; [] on failure (sparks/charts degrade quietly)."""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "jev-terminal/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = json.loads(r.read().decode())
-        rows = data.get("data", [])
-        rows.reverse()  # API returns newest first
-        return [float(x[4]) for x in rows]
+        res = _yahoo_chart(inst, "interval=5m&range=1d")
+        q = ((res or {}).get("indicators") or {}).get("quote") or [{}]
+        closes = [float(c) for c in (q[0].get("close") or []) if c is not None]
+        return closes[-limit:]
     except Exception:
         return []
 
@@ -1465,84 +1808,110 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
     r_stats = retired.get("stats") or {}
     r_equity = retired.get("equity") or {}
     r_trips = retired.get("trades") or []
-    recent = r_trips[-6:] if r_trips else trips[-6:]
     perp = perp or {}
     perp_positions = perp.get("positions") or []
     perp_stats = perp.get("stats") or {}
-    # True when the spot book has been decommissioned: the payload then reports the
-    # perp book as "today" and labels every spot number as frozen history.
+    # True when the spot book has been decommissioned: the payload then reports
+    # the live stocks book as "today" and labels every OKX number as frozen history.
     _spot_retired = SPOT_BOOK_RETIRED
-    _is_mom = (perp or {}).get("strategy") == "momentum"
+    # Description constants come from the LIVE engine source / parsed params —
+    # never transcribed (the OKX era proved transcription drifts).
+    _p = _live_params()
+    _ver = _versions().get("stocks") or "unknown"
     _engine_desc = (
-        "The engine: a DETERMINISTIC cross-sectional MEAN-REVERSION (fade) strategy (v6 fade engine) — the most "
-        "liquid XPERPs are ranked by 48-hour return; the 2 most extreme movers (|48h| ≥ 5%) are FADED: long the "
-        "biggest losers, short the biggest winners, 24h hold then full rebalance, TP 3% + catastrophic SL 15% "
-        "(server OCO + poll backup), ~2x isolated all-in sizing (operator-authorized). No LLM participates in "
-        "trade decisions; exits are the TP, the disaster stop or the rebalance. It replaced the v5 momentum book "
-        "on 2026-10-30 after momentum's live kill-gate window went negative in the chop regime; the Jev LLM "
-        "signal was retired 2026-10-25 (no edge at its own kill-gate review).\n\n"
-    ) if _is_mom else (
-        "The engine: deterministic Python gates scan the universe, momentum/depth gates filter, "
-        "then the TypeSafe jev-latest decision API returns TYPED JSON decisions (halogen is used "
-        "only for desk text; probabilities + confidence, schema-checked, "
-        "scored in BOTH directions per contract; invalid output fails closed to no_trade); "
-        "exits are server-side OCO + trailing stops. News/macro are injected into the model's state. "
-        "Operator directive 2026-11-14 restored TypeSafe Jev decisions with 5x aggressive scalping, "
-        "replacing the v8 halogen-decision book; Jev had been retired 2026-10-25 (no edge) and was "
-        "re-authorized by the operator informed of that history.\n\n"
+        "The engine (alpaca_stocks.py, " + _ver + "): NEWS is the signal. Each 5-min cycle polls the "
+        "Alpaca News API for fresh headlines (<=" + str(int(_p.get("NEWS_WINDOW_MIN") or 90)) + " min old) on a fixed "
+        + str(len(_stocks_universe()) or 30) + "-name US-stock universe; "
+        "fresh headlines become candidates. The self-hosted halogen-qwen3.8-flash-next LLM reads ONE "
+        "headline + summary + price context per candidate and returns TYPED JSON "
+        "{action: buy|no_trade, confidence, impact, target_pct, stop_pct, horizon_hours, rationale}. "
+        "Any transport/parse/schema failure FAILS CLOSED to no_trade. The LLM never sizes positions "
+        "and never overrides a gate — CODE owns risk: regular-market-hours clock (09:30-16:00 ET), "
+        "spread/staleness/ask-vs-last gates, chase guard (no buying a name already +"
+        + fmt_pct(_p.get("CHASE_CAP_PCT"), 7) + "% on the day) "
+        "and knife floor (no catching " + fmt_pct(_p.get("KNIFE_FLOOR_PCT"), -9) + "% days), "
+        "confidence >= " + fmt_pct(_p.get("CONF_FLOOR"), 0.60) + " and impact not low, "
+        "one entry per symbol per day, MAX_OPEN=" + str(int(_p.get("MAX_OPEN") or 2)) + " slots, all-in fractional sizing "
+        "(~equity*" + fmt_pct(_p.get("MAX_NOTIONAL_FRAC"), 0.98) + "/" + str(int(_p.get("MAX_OPEN") or 2)) + " per leg), engine-managed TP/SL brackets (fractional orders cannot carry "
+        "server-side brackets, so the engine polls and exits), " + str(int(_p.get("MAX_HOLD_H") or 48)) + "h time exit, -"
+        + fmt_pct(_p.get("DAILY_LOSS_PCT"), 8) + "% daily equity "
+        "breaker with UTC-rollover auto-clear, STOP/STOP_PERP kill files, orphan reconciliation. "
+        "LONG-ONLY, commission-free stocks (tiny sell-side SEC/TAF regulatory fee on closes), "
+        "fractional shares, small experimental capital (live_equity.capital_put_in is authoritative). "
+        "Honest EV: no demonstrated edge yet — the "
+        "OKX fade edge was venue-specific and does NOT transfer; this is a fresh hypothesis with a "
+        "pre-registered kill-gate (30 closed trades OR 14 days, whichever first; live realized net "
+        "<= 0 -> replace the algorithm, per the operator's standing rule).\n\n"
     )
     perp_open = [{
-        "book": "X-PERP", "inst": p.get("inst"), "side": p.get("side"),
+        "book": "STOCKS", "inst": p.get("inst"), "side": p.get("side"),
         "entry": p.get("entry_ref"), "notional_usd": p.get("notional_usd"),
         "upc_pct": p.get("upc"),
     } for p in perp_positions]
+    _lj = perp.get("last_jev") or {}
     payload_txt = json.dumps({
         "trading_state": {
             "mode": ENGINE["mode"],
+            "venue": "Alpaca US equities — the ONE live book",
             "live_capital": True,
-            "halted": os.path.exists(os.path.join(BASE, "STOP")),
+            # authoritative flags from the engine snapshot; dry=true means a
+            # dry-run (no orders), otherwise the engine trades live.
+            "dry": bool(perp.get("dry")),
+            "halted": os.path.exists(os.path.join(BASE, "STOP")) or os.path.exists(os.path.join(BASE, "STOP_PERP")),
+            "market_open": perp.get("market_open"),
+            "regular_hours_et": "09:30-16:00 (entries only in regular hours)",
             "spot_book_status": ENGINE.get("spot_book", {}).get("status"),
             "spot_book_why": ENGINE.get("spot_book", {}).get("why"),
+            "okx_book_status": ENGINE.get("okx_book", {}).get("status"),
+            "okx_book_why": ENGINE.get("okx_book", {}).get("why"),
             "spot_open_positions": len(positions or []),
-            "perp_open_positions": len(perp_positions),
+            "stocks_open_positions": len(perp_positions),
             "open_positions": len(positions or []) + len(perp_positions),
-            "perp_halted": perp.get("halted"),
-            "strategy": perp.get("strategy"),
-            # day_trades = the LIVE book's count once spot is retired (spot's is frozen)
-            "day_trades": (perp_stats.get("day_trades") if _spot_retired
-                           else equity.get("day_trades")),
-            "day_trades_book": "live X-Perp book" if _spot_retired else "spot book",
+            "stocks_halted": perp.get("halted"),
+            "strategy": perp.get("strategy") or "news",
+            # day_trades = the LIVE stocks book's count (both OKX books are frozen)
+            "day_trades": perp_stats.get("day_trades"),
+            "day_trades_book": "live stocks book",
         },
         # these two are the RETIRED spot book's numbers — relabelled so they are
         # never read as current account state (live_equity above is the truth)
         "retired_spot_equity_series": r_equity,
         "retired_spot_stats": {k: r_stats.get(k) for k in ("trades_all", "win_rate_pct", "net_all_eur",
                                         "profit_factor", "fees_all_eur")},
+        # the RETIRED OKX X-Perp book's FINAL record — frozen history, baked
+        # from the full OKX-era log at cutover. Never narrate as current.
+        "retired_okx_record": {k: OKX_RETIRED_RECORD.get(k) for k in (
+            "label", "status", "venue", "engine_version_final", "first_ts", "last_close_ts",
+            "trades_closed", "win_rate_pct", "net_usd", "net_usd_approx", "net_pct",
+            "capital_usd", "longs", "shorts", "why")},
+        # key name 'perp_book' is HISTORICAL (telemetry filenames stayed perp_*);
+        # its contents are the LIVE Alpaca stocks book.
         "perp_book": {
+            "venue": "Alpaca US equities",
             "open_positions": perp_open,
-            "usdc_collateral": perp.get("usdc_equity"),
-            "last_call": perp.get("last_jev") and {
-                "ts": perp["last_jev"].get("ts"), "choice": perp["last_jev"].get("choice"),
-                "chosen_side": perp["last_jev"].get("chosen_side"),
-                "conf": perp["last_jev"].get("conf")},
+            "equity_usd": perp.get("usdc_equity"),
+            "last_call": _lj and {
+                "ts": _lj.get("ts"), "choice": _lj.get("choice"),
+                "chosen_side": _lj.get("chosen_side"),
+                "conf": _lj.get("conf"), "headline": _lj.get("headline")},
             "closed_trades": perp_stats.get("trades_all"),
             "realized_pct": perp_stats.get("net_all_pct"),
         },
-        # LIVE decision stream = the perp book. This is the only thing to call
-        # "the latest decision": the spot engine is retired and its last logged
-        # call is a frozen historical artifact that would otherwise be narrated
-        # as a current intent (it did exactly that before this split).
-        "live_decision": (perp.get("last_jev") or {}) and {
-            "book": "X-PERP (LIVE)",
-            "ts": (perp.get("last_jev") or {}).get("ts"),
-            "choice": (perp.get("last_jev") or {}).get("choice"),
-            "inst": (perp.get("last_jev") or {}).get("chosen_inst"),
-            "side": (perp.get("last_jev") or {}).get("chosen_side"),
-            "conf": (perp.get("last_jev") or {}).get("conf"),
-            "margin": (perp.get("last_jev") or {}).get("margin"),
-            "noul": (perp.get("last_jev") or {}).get("noul"),
-            "probabilities": (perp.get("last_jev") or {}).get("probabilities"),
-            "gate_verdict": ((perp.get("last_jev") or {}).get("criteria") or {}).get("fire"),
+        # LIVE decision stream = the stocks book's last halogen news call. This
+        # is the only thing to call "the latest decision"; every retired_* call
+        # is a frozen historical artifact.
+        "live_decision": _lj and {
+            "book": "STOCKS (LIVE)",
+            "ts": _lj.get("ts"),
+            "choice": _lj.get("choice"),
+            "inst": _lj.get("chosen_inst"),
+            "side": _lj.get("chosen_side"),
+            "conf": _lj.get("conf"),
+            "headline": _lj.get("headline"),
+            "rationale": _lj.get("rationale"),
+            "impact": _lj.get("impact"),
+            "probabilities": _lj.get("probabilities"),
+            "gate_verdict": (_lj.get("criteria") or {}).get("fire"),
         },
         # The retired spot book's FINAL logged call — explicitly labelled as
         # historical. Never describe it as the current decision or intent.
@@ -1552,8 +1921,7 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "inst": jev_latest["chosen_inst"], "conf": jev_latest["confidence"],
             "margin": jev_latest["margin"], "noul": jev_latest["noul"],
             "probabilities": jev_latest["probabilities"]},
-        "live_equity": {"usdc_collateral": perp.get("usdc_equity"),
-                        "eur_float": perp.get("eur_float"),
+        "live_equity": {"equity_usd": perp.get("usdc_equity"),
                         "account_total_usd": perp.get("account_total_usd"),
                         "capital_put_in": perp_stats.get("capital_usd"),
                         "realized_usd_all_time": perp_stats.get("net_all_usd"),
@@ -1569,13 +1937,17 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             "profit_factor": r_stats.get("profit_factor"),
             "fees_eur": r_stats.get("fees_all_eur"),
         },
-        # spot closed trips, labelled as history
+        # spot closed trips, labelled as history (ONLY from the retired stream)
         "recent_trades_retired_spot": [
             {k: t[k] for k in ("inst", "upc", "net_eur", "reason", "close_ts") if k in t}
-            for t in recent],
+            for t in r_trips[-6:]],
+        # the LIVE stocks book's recent closed trades
+        "recent_trades_live_stocks": [
+            {"inst": t.get("inst"), "upc": t.get("upc"), "net_usd": t.get("net_eur"),
+             "reason": t.get("reason"), "close_ts": t.get("close_ts")}
+            for t in trips[-6:]],
+        # fresh stock-news headlines — the LIVE book's actual signal
         "news": news[:6],
-        "fear_greed": (sentiment or {}).get("fear_greed"),
-        "funding_bps": jev_latest and jev_latest.get("funding_bps"),
     }, separators=(",", ":"))
     h = hashlib.sha256(payload_txt.encode()).hexdigest()
     age = time.time() - (cache.get("ts") or 0)
@@ -1604,36 +1976,49 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
             return cache.get("out")
     prompt = (
         "You are the desk commentator for OBEKT TERMINAL, the Bloomberg-style observation dashboard of a "
-        "LIVE autonomous crypto trading system trading REAL capital on OKX Europe (EEA), 5-min cycles. "
-        "It runs ONE live book: X-PERPS — USD-settled MiFID expiry perps, two-way (LONG and SHORT), "
-        "USDC collateral, 2x isolated. "
-        "A second book, SPOT (EUR pairs, long-only), was RETIRED on 2026-10-15: trading_state."
-        "spot_book_status says so and spot_book_why gives the reason. Its engine code and full trade "
-        "history remain on the dashboard as a record, but it no longer trades — spot_open_positions will "
-        "stay 0 permanently and that is EXPECTED, not a malfunction or an idle engine. "
-        "Do not describe spot as live, paused, waiting or idle. If you mention it at all, describe it as "
-        "retired with its final record. "
-        "CRITICAL — read the payload keys by their labels: live_decision, live_equity and perp_book are "
-        "the CURRENT system. Keys prefixed retired_spot_ (retired_spot_last_call, retired_spot_record, "
-        "retired_spot_stats, retired_spot_equity_series, recent_trades_retired_spot) are FROZEN HISTORY. "
-        "Never present a retired_spot_last_call as the latest decision or current intent — that was the "
-        "last thing the spot engine logged before it was switched off, and it may be hours or days old. "
-        "When you refer to 'the latest decision', mean live_decision (the X-Perp call). "
-        "If live_decision has no inst, the model chose no_trade and the engine is standing aside — that is "
-        "a real, correct state, not missing data. "
-        "The dashboard displays telemetry read-only, but the ENGINE behind it places real orders: it is "
-        "NEVER in demo, paper, showcase or read-only trading mode. The trading_state block in the snapshot "
-        "is authoritative — halted=true means the kill switch is on; otherwise it is trading live. "
-        "open_positions is now effectively perp_open_positions; the perp_book block "
-        "lists each open X-Perp position with its side (long/short). "
-        "Few or zero trades in a day is normal gate selectivity, not a mode change. "
+        "LIVE autonomous US-STOCK trading system trading REAL capital on ALPACA, 5-min cycles. "
+        "It runs ONE live book: ALPACA US EQUITIES — LONG-ONLY, fractional shares, commission-free "
+        "(tiny sell-side SEC/TAF regulatory fees on closes), USD cash, no leverage, small experimental "
+        "capital (~$120 at the 2026-11-19 cutover; live_equity.capital_put_in is authoritative). "
+        "Entries happen ONLY in regular market hours (09:30-16:00 ET); outside them the engine "
+        "accumulates news and manages exits at the next open — a closed market is a NORMAL state, "
+        "not a malfunction. "
+        "The strategy is NEWS-DRIVEN: fresh stock-news headlines (Alpaca News API) are the signal; "
+        "the self-hosted halogen LLM returns typed JSON buy/no_trade decisions with confidence, "
+        "impact and target/stop expectations; deterministic CODE gates own all risk (spread, "
+        "staleness, chase/knife guards, confidence floor, impact, slot limits, one entry per symbol "
+        "per day) and the engine manages TP/SL brackets itself, plus a 48h time exit and a -8% "
+        "daily equity breaker. The LLM never sizes or overrides a gate. "
+        "TWO retired books are FROZEN HISTORY on this dashboard: (1) the OKX X-PERP book "
+        "(2026-10-15 → 2026-11-19, two-way crypto perps, final engine v10.0-fade) and (2) the OKX "
+        "SPOT EUR book (2026-09-28 → 2026-10-15). The whole OKX era ended 2026-11-19 by operator "
+        "directive — the venue moved to Alpaca US stocks. trading_state.okx_book_status and "
+        "spot_book_status say so; retired_okx_record carries the X-Perp book's FINAL numbers. "
+        "Do not describe either OKX book as live, paused, waiting or idle; if you mention them at "
+        "all, describe them as retired with their final record. No crypto is traded anymore. "
+        "CRITICAL — read the payload keys by their labels: live_decision, live_equity and perp_book "
+        "(historical key name — its contents are the LIVE STOCKS book) are the CURRENT system. "
+        "Keys prefixed retired_ (retired_okx_record, retired_spot_last_call, retired_spot_record, "
+        "retired_spot_stats, retired_spot_equity_series, recent_trades_retired_spot) are FROZEN "
+        "HISTORY. Never present a retired call or record as the latest decision or current intent. "
+        "When you refer to 'the latest decision', mean live_decision (the halogen news call). "
+        "If live_decision has no inst, the model chose no_trade and the engine is standing aside — "
+        "that is a real, correct state, not missing data. Few or zero trades in a day is normal "
+        "gate selectivity (fresh high-impact news is rare), not a mode change. "
+        "The dashboard displays telemetry read-only, but the ENGINE behind it places real orders. "
+        "The trading_state block is authoritative: dry=true means a dry-run with zero orders; "
+        "halted=true means a kill switch is on; otherwise it is trading live. NEVER invent modes "
+        "(no 'demo', 'paper', 'showcase' or 'read-only trading' unless dry=true literally says so). "
+        "open_positions is the live stocks book's count; perp_book.open_positions lists each open "
+        "stock position (all long). "
         + _engine_desc +
         "LIVE SYSTEM SNAPSHOT (UTC):\n" + payload_txt + "\n\n"
         "Write for sophisticated visitors who might hire the sysop to build one. Rules: "
-        "reference ONLY facts in the snapshot, no invented numbers, no invented modes or states "
-        "(never call it showcase/demo/read-only trading), no financial advice, terse terminal voice. "
+        "reference ONLY facts in the snapshot, no invented numbers, no invented modes or states, "
+        "no financial advice, terse terminal voice. If capital_put_in is 0 the cutover funding "
+        "figure is not confirmed yet — say realized % is pending the capital base, do not invent one. "
         "Reply STRICT JSON: {\"desk_note\": \"<3-5 sentences: tape read, what the engine is doing and why, "
-        "risk posture>\", \"decision_line\": \"<ONE line <=110 chars explaining the latest Jev decision or "
+        "risk posture>\", \"decision_line\": \"<ONE line <=110 chars explaining the latest news decision or "
         "why the engine is flat>\"}"
     )
     try:
@@ -1669,15 +2054,16 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
 
 
 def build_perp(shared_trips=None):
-    """v4: two-way X-Perp book (separate engine, USDC collateral, LONG+SHORT).
-    Reads perp_log.jsonl / perp_positions.json / perp_universe.json from BASE.
-    Returns a compact block for a dedicated deck panel; None-safe if the perp
-    engine has never run.
+    """The LIVE book panel. Since the 2026-11-19 venue change this is the ALPACA
+    US-STOCKS news book (alpaca_stocks.py); the function/file names are historical
+    (the engine reuses perp_log.jsonl / perp_positions.json / perp_status.json and
+    the perp_* event vocabulary on purpose, so this adapter keeps working).
+    Returns a compact block for a dedicated deck panel; None-safe if the engine
+    has never run.
 
-    `shared_trips` is the perp round-trip list already built by the shared
-    matcher in build(). Passing it in avoids a SECOND independent open/close
-    pairing of the same log — two matchers is how the panels end up disagreeing
-    with each other, and it already harboured the sum-of-stake-% bug once.
+    `shared_trips` is the round-trip list already built by the shared matcher in
+    build(). Passing it in avoids a SECOND independent open/close pairing of the
+    same log — two matchers is how the panels end up disagreeing with each other.
     """
     events = read_perp_log()
     if not events:
@@ -1686,7 +2072,7 @@ def build_perp(shared_trips=None):
     if shared_trips is not None:
         trips = shared_trips
     else:
-        trips = build_round_trips(normalize_perp_events(events), "USD", PERP_CAPITAL_USD)
+        trips = build_round_trips(normalize_perp_events(events), "USD", STOCKS_CAPITAL_USD)
     # `net_usd` is the canonical key for this panel; the shared matcher names the
     # same value net_eur (a historical identifier meaning "book currency").
     for t in trips:
@@ -1695,17 +2081,18 @@ def build_perp(shared_trips=None):
     longs = [t for t in trips if t.get("side") == "long"]
     shorts = [t for t in trips if t.get("side") == "short"]
     wins = [t for t in trips if (t.get("net_usd") or 0) > 0]
-    # Equity curve in % of CAPITAL PUT INTO THE PERP BOOK AS OF EACH TRADE — not a
-    # sum of per-trade net_pct (that mixes $8 and $130 notionals and is meaningless).
-    # Injections raise the denominator, so the consolidation never shows as a gain.
+    # Equity curve in % of CAPITAL PUT INTO THE LIVE BOOK AS OF EACH TRADE — not
+    # a sum of per-trade net_pct (that mixes $8 and $130 notionals and is
+    # meaningless). Injections raise the denominator, so they never show as gain.
     cum, run = [], 0.0
     for t in sorted([x for x in trips if x.get("close_ts")], key=lambda x: x["close_ts"]):
         run += (t.get("net_usd") or 0)
-        base = _perp_capital_at(t.get("close_ts"))
+        base = _stocks_capital_at(t.get("close_ts"))
         cum.append(round(100 * run / base, 3) if base else 0.0)
-    # all-time realized % uses the CURRENT capital base (money in the book now)
+    # all-time realized % uses the CURRENT capital base (money in the book now).
+    # If the capital base is 0 (book not yet funded) this is None — honest.
     net_all_usd_val = sum((t.get("net_usd") or 0) for t in trips)
-    net_all_pct = round(100 * net_all_usd_val / PERP_CAPITAL_USD, 2) if PERP_CAPITAL_USD else None
+    net_all_pct = round(100 * net_all_usd_val / STOCKS_CAPITAL_USD, 2) if STOCKS_CAPITAL_USD else None
 
     # TODAY for the live book: realized USD from trades closed today, as a % of
     # the engine's own day_equity_start (re-based whenever capital moves, so this
@@ -1715,14 +2102,14 @@ def build_perp(shared_trips=None):
     day_trips = [t for t in trips if (t.get("close_ts") or "").startswith(today_utc)]
     day_net_usd = sum((t.get("net_usd") or 0) for t in day_trips)
 
-    # live collateral + open positions from the perp engine's own files
+    # live equity + open positions from the engine's own files (the stocks
+    # engine reuses the perp_* filenames; key names are historical, money is USD)
     pmeta = _load_json(os.path.join(BASE, "perp_positions.json"), {}) or {}
-    puniv = _load_json(os.path.join(BASE, "perp_universe.json"), {}) or {}
     prank = _load_json(os.path.join(BASE, "perp_risk_state.json"), {}) or {}
     psnap = _load_json(os.path.join(BASE, "perp_status.json"), {}) or {}
     positions = []
-    # live rows from perp_status.json carry last/upc/liq_px (engine has creds;
-    # the container does not) — prefer them, fall back to raw meta.
+    # live rows from perp_status.json carry last/upc (engine has creds; the
+    # container does not) — prefer them, fall back to raw meta.
     live_by = {}
     for p in (psnap.get("positions") or []):
         if isinstance(p, dict) and p.get("inst"):
@@ -1737,6 +2124,9 @@ def build_perp(shared_trips=None):
                           "bracket": m.get("bracket"),
                           "hwm_pct": m.get("hwm_pct"), "algo_ok": m.get("algo_ok"),
                           "opened_ts": m.get("opened_ts"), "jev_conf": m.get("jev_conf"),
+                          "news_headline": m.get("news_headline"),
+                          "news_rationale": m.get("news_rationale"),
+                          "max_hold_h": m.get("max_hold_h"),
                           "last": lv.get("last"), "upc": lv.get("upc"),
                           "liq_px": lv.get("liq_px"), "upl": lv.get("upl"),
                           "lever": lv.get("lever")})
@@ -1744,76 +2134,138 @@ def build_perp(shared_trips=None):
     for e in reversed(events):
         if e.get("event") == "mom_scan":
             last_mom = {"ts": e.get("ts"), "longs": e.get("longs"), "shorts": e.get("shorts"),
-                        "n_universe": e.get("n_universe"), "n_ranked": e.get("n_ranked")}
+                        "n_universe": e.get("n_universe"), "n_ranked": e.get("n_ranked"),
+                        # stocks-era scan context: news signal + day movers
+                        "signal": e.get("signal"),
+                        "n_fresh_headlines": e.get("n_fresh_headlines"),
+                        "top": e.get("top"), "bottom": e.get("bottom")}
             break
+    # universe: the stocks engine logs perp_universe events each scan and keeps
+    # its fixed UNIVERSE in source; perp_universe.json (OKX era) is a fallback.
+    _uni_syms = _stocks_universe()
+    _last_univ_ev = next((e for e in reversed(events) if e.get("event") == "perp_universe"), None)
+    puniv = _load_json(os.path.join(BASE, "perp_universe.json"), {}) or {}
+    if _uni_syms:
+        universe_list = _uni_syms
+        universe_selected = (_last_univ_ev or {}).get("selected") or []
+        universe_scanned_iso = (_last_univ_ev or {}).get("ts")
+    else:
+        universe_list = puniv.get("pairs", [])
+        universe_selected = puniv.get("selected", [])
+        universe_scanned_iso = (datetime.fromtimestamp(puniv.get("scanned"), timezone.utc).isoformat()
+                                if puniv.get("scanned") else None)
+    # market-open flag from the latest heartbeat (the engine logs it each cycle)
+    _market_open = None
+    for e in reversed(events):
+        if e.get("event") == "mom_heartbeat" and e.get("market_open") is not None:
+            _market_open = bool(e.get("market_open"))
+            break
+    # breaker state: risk file (OKX shape) or the stocks STOP file content
+    _breaked = prank.get("breaked")
+    if _breaked is None:
+        try:
+            _stop_txt = open(os.path.join(BASE, "STOP")).read().strip()
+            _breaked = _stop_txt.startswith("breaker")
+        except Exception:
+            _breaked = False
     last_jev = None
     for e in reversed(events):
         if e.get("event") == "perp_jev":
+            _pairs = e.get("pairs") or []
+            _p0 = _pairs[0] if _pairs else {}
             last_jev = {"ts": e.get("ts"), "choice": e.get("choice"), "conf": e.get("conf"),
                         "margin": e.get("margin"), "noul": e.get("noul"),
                         "chosen_inst": e.get("chosen_inst"), "chosen_side": e.get("chosen_side"),
                         "probabilities": e.get("probabilities") or {},
-                        "pairs": e.get("pairs") or [],
+                        "pairs": _pairs,
                         "collateral_usdc": e.get("collateral_usdc"),
                         "budget_usd": e.get("budget_usd"),
+                        # stocks-era decision context (the headline IS the signal)
+                        "headline": e.get("headline") or _p0.get("headline"),
+                        "rationale": e.get("rationale"),
+                        "impact": _p0.get("impact"),
+                        "day_chg_pct": _p0.get("day_chg_pct"),
                         "tokens": {"in": e.get("input_tokens"), "out": e.get("output_tokens")}}
-            # Gate verdict for the LIVE book, scored against the PERP engine's own
-            # bars (parsed from okx_perp.py source — never hardcoded, and never
-            # the spot engine's, whose CONF_FLOOR differs at 0.50 vs 0.40).
-            # Same fire rule the engine enforces:
-            #   edge = (margin >= MARGIN_BAR or conf >= CONF_BAR) and conf >= CONF_FLOOR
-            #   fire = edge and noul >= NOUL_BAR
-            pMBAR, pCBAR, pCFLOOR, pNBAR = _engine_bars("okx_perp.py")
             p_conf = e.get("conf")
-            p_margin = e.get("margin")
-            p_noul = e.get("noul")
             na = not e.get("chosen_inst")
-            last_jev["criteria"] = {
-                "margin_bar": pMBAR, "conf_bar": pCBAR,
-                "conf_floor": pCFLOOR, "noul_bar": pNBAR,
-                "margin_ok": None if na else (p_margin is not None and p_margin >= pMBAR),
-                "conf_ok": None if na else (p_conf is not None and p_conf >= pCBAR),
-                "noul_ok": None if na else (p_noul is not None and p_noul >= pNBAR),
-                "confidence": p_conf,
-                "fire": False if na else bool(
-                    ((p_margin is not None and p_margin >= pMBAR) or
-                     (p_conf is not None and p_conf >= pCBAR))
-                    and (p_conf is not None and p_conf >= pCFLOOR)
-                    and (p_noul is not None and p_noul >= pNBAR)),
-                "book": "x-perp",
-                "engine_source": "okx_perp.py",
-            }
+            if e.get("engine") == "stocks":
+                # Gate verdict scored against the STOCKS engine's own bars,
+                # parsed from alpaca_stocks.py (never hardcoded): the engine
+                # fires only when conf >= CONF_FLOOR AND impact != low (after
+                # the deterministic pre-gates already passed).
+                try:
+                    _src = open(os.path.join(BASE, LIVE_ENGINE)).read(32768)
+                    _m = re.search(r'^CONF_FLOOR\s*=\s*([0-9.]+)', _src, re.M)
+                    pCFLOOR = float(_m.group(1)) if _m else 0.60
+                except Exception:
+                    pCFLOOR = 0.60
+                _impact = _p0.get("impact")
+                _conf_ok = None if na else (p_conf is not None and p_conf >= pCFLOOR)
+                _impact_ok = None if na else (_impact in ("high", "medium"))
+                last_jev["criteria"] = {
+                    "margin_bar": None, "conf_bar": None,
+                    "conf_floor": pCFLOOR, "noul_bar": None,
+                    "margin_ok": None, "conf_ok": _conf_ok, "noul_ok": None,
+                    "conf_floor_ok": _conf_ok,
+                    "impact": _impact, "impact_ok": _impact_ok,
+                    "confidence": p_conf,
+                    "fire": False if na else bool(_conf_ok and _impact_ok),
+                    "book": "stocks",
+                    "engine_source": LIVE_ENGINE,
+                }
+            else:
+                # legacy OKX shape (kept so an old log still renders honestly)
+                pMBAR, pCBAR, pCFLOOR, pNBAR = _engine_bars("okx_perp.py")
+                p_margin = e.get("margin")
+                p_noul = e.get("noul")
+                last_jev["criteria"] = {
+                    "margin_bar": pMBAR, "conf_bar": pCBAR,
+                    "conf_floor": pCFLOOR, "noul_bar": pNBAR,
+                    "margin_ok": None if na else (p_margin is not None and p_margin >= pMBAR),
+                    "conf_ok": None if na else (p_conf is not None and p_conf >= pCBAR),
+                    "noul_ok": None if na else (p_noul is not None and p_noul >= pNBAR),
+                    "confidence": p_conf,
+                    "fire": False if na else bool(
+                        ((p_margin is not None and p_margin >= pMBAR) or
+                         (p_conf is not None and p_conf >= pCBAR))
+                        and (p_conf is not None and p_conf >= pCFLOOR)
+                        and (p_noul is not None and p_noul >= pNBAR)),
+                    "book": "x-perp",
+                    "engine_source": "okx_perp.py",
+                }
             break
-    # v5.0-mom: a Jev call OLDER than the latest momentum scan is frozen history,
-    # not the live decision (freshness rule: never present a dead engine's last
-    # call as current intent).
+    # Strategy detection. Stocks era: the scan carries signal="news" — the
+    # halogen calls ARE the live decisions, so a newer scan does not freeze the
+    # last call (cycles without fresh candidates legitimately log no call).
+    # Legacy OKX momentum kept the freshness rule: a Jev call older than the
+    # latest momentum scan was a dead engine's artifact.
     _strategy = "jev"
-    if last_mom and (not last_jev or (last_mom.get("ts") or "") > (last_jev.get("ts") or "")):
+    if last_mom and last_mom.get("signal") == "news":
+        _strategy = "news"
+    elif last_mom and (not last_jev or (last_mom.get("ts") or "") > (last_jev.get("ts") or "")):
         _strategy = "momentum"
         last_jev = None
     return {
-        # version read from the perp engine source (never hardcoded — it drifted
-        # to a stale "v4.0-perp" string the first time this block was written)
+        # version read from the LIVE engine source (never hardcoded)
         "engine": _perp_engine_version(),
         "strategy": _strategy,
         "last_mom": last_mom,
         "mom_anchor": (_load_json(os.path.join(BASE, "mom_state.json"), {}) or {}).get("last_rebalance_ts"),
-        "venue": "OKX EUROPE X-PERPS (MiFID)",
+        "venue": psnap.get("venue") or "Alpaca US equities",
         "halted": os.path.exists(os.path.join(BASE, "STOP")) or os.path.exists(os.path.join(BASE, "STOP_PERP")),
-        "breaked": prank.get("breaked"), "day": prank.get("day"),
+        "breaked": _breaked, "day": prank.get("day"),
+        "dry": psnap.get("dry"),
+        "market_open": _market_open,
+        # key name usdc_equity is HISTORICAL — the value is Alpaca USD equity
         "usdc_equity": psnap.get("usdc_equity"),
-        # WHOLE-ACCOUNT truth from the engine snapshot. Before this the deck read
-        # cash from the retired spot engine's last jev event, frozen at the
-        # pre-conversion 100.73 EUR, and the desk note repeated it as current.
         "eur_float": psnap.get("eur_float"),
         "account_total_usd": psnap.get("account_total_usd"),
-        "collateral_ccy": psnap.get("collateral_ccy") or "USDC",
+        "collateral_ccy": psnap.get("collateral_ccy") or "USD",
         "status_ts": psnap.get("ts"),
-        "universe": puniv.get("pairs", []),
-        "universe_selected": puniv.get("selected", []),
+        "universe": universe_list,
+        "universe_selected": universe_selected,
         "universe_scanned": puniv.get("scanned"),
-        "universe_scanned_iso": (datetime.fromtimestamp(puniv.get("scanned"), timezone.utc).isoformat()
-                                  if puniv.get("scanned") else None),
+        "universe_scanned_iso": universe_scanned_iso,
         "positions": positions,
         "last_jev": last_jev,
         "trades": trips[-20:][::-1],
@@ -1823,14 +2275,14 @@ def build_perp(shared_trips=None):
             "longs": len(longs), "shorts": len(shorts),
             "net_all_pct": net_all_pct,
             "net_all_usd": round(net_all_usd_val, 2),
-            "capital_usd": PERP_CAPITAL_USD,
+            "capital_usd": STOCKS_CAPITAL_USD,
             "day_trades": len(day_trips),
             "day_net_usd": round(day_net_usd, 2),
             # % of the engine's own day_equity_start (re-based on capital moves)
             "day_pnl_pct": (round(100 * day_net_usd / float(prank.get("day_equity_start")), 2)
                             if prank.get("day_equity_start") else None),
             "day_equity_start": prank.get("day_equity_start"),
-            "breaked": prank.get("breaked"),
+            "breaked": _breaked,
         },
         "cum_pnl_pct": cum,
     }
@@ -1839,17 +2291,18 @@ def build_perp(shared_trips=None):
 def build():
     t0 = time.time()
     # TWO event streams. `events` = the retired spot EUR book (frozen history).
-    # `perp_events` = the LIVE X-Perp book, normalized onto the same generic
-    # event shapes so one set of tested builders serves both. Every non-retired
-    # panel must read the LIVE book: pointing them at the spot log makes the deck
-    # present dead-engine data as current (it did — 15 panels were frozen at the
-    # moment spot was disabled while claiming to be live).
+    # `perp_events` = the LIVE book (Alpaca US stocks since 2026-11-19; the
+    # engine reuses the perp_* filenames/vocabulary), normalized onto the same
+    # generic event shapes so one set of tested builders serves both. Every
+    # non-retired panel must read the LIVE book: pointing them at a retired log
+    # makes the deck present dead-engine data as current (it did once — 15
+    # panels frozen at the moment spot was disabled while claiming to be live).
     events = read_log()
     perp_raw = read_perp_log()
     perp_events = normalize_perp_events(perp_raw)
     live_events = perp_events if (SPOT_BOOK_RETIRED and perp_events) else events
     live_ccy = "USD" if (SPOT_BOOK_RETIRED and perp_events) else "EUR"
-    live_base = PERP_CAPITAL_USD if live_ccy == "USD" else LAUNCH_EUR
+    live_base = STOCKS_CAPITAL_USD if live_ccy == "USD" else LAUNCH_EUR
 
     trips = build_round_trips(live_events, live_ccy, live_base)
     jev_events = [e for e in live_events if e.get("event") == "jev"]
@@ -1868,17 +2321,25 @@ def build():
         except Exception as ex:
             print("dossier failed %s: %s" % (t.get("tid"), ex), file=sys.stderr)
     stats = build_stats(trips, live_events, live_ccy, live_base,
-                        capital_base_fn=(_perp_capital_at if live_ccy == "USD" else None))
+                        capital_base_fn=(_stocks_capital_at if live_ccy == "USD" else None))
     equity = build_equity(live_events, trips)
     jev_latest = build_jev_latest(live_events)
     jev_hist = build_jev_history(live_events)
     tape = build_tape(live_events)
-    # the LIVE book's universe cache (perp_universe.json when spot is retired)
-    universe = _load_json(os.path.join(BASE, "perp_universe.json" if live_ccy == "USD" else "universe.json"), {}) or {}
+    # the LIVE book's universe. Stocks era: fixed list parsed from the engine
+    # source + the latest perp_universe scan event (the stocks engine does not
+    # write perp_universe.json). Retired spot: its frozen universe.json.
+    if live_ccy == "USD":
+        _us = _stocks_universe()
+        _ue = next((e for e in reversed(perp_raw) if e.get("event") == "perp_universe"), None)
+        universe = {"n_stocks": len(_us), "stocks": _us,
+                    "n_eur_pairs": None,
+                    "selected": (_ue or {}).get("selected") or [],
+                    "scanned_iso": (_ue or {}).get("ts")}
+    else:
+        universe = _load_json(os.path.join(BASE, "universe.json"), {}) or {}
     funnel = build_funnel(live_events, universe)
     scatter = build_scatter(live_events)
-    social = _load_json(os.path.join(BASE, "social.json"), {}) or {}
-    catalyst = _load_json(os.path.join(BASE, "catalyst.json"), {}) or {}
     risk = _load_json(os.path.join(BASE, "risk_state.json"), {}) or {}
     positions_raw = _load_json(os.path.join(BASE, "positions.json"), {}) or {}
 
@@ -1896,24 +2357,23 @@ def build():
         # perp.last_mom + the momentum rows in DECISION GATES.
         jev_latest = None
 
-    news = catalyst.get("catalysts", [])
-    # MACRO: source-honest publishing. The deterministic fade book did not
-    # inject econ-calendar events; the v7.0 halogen LLM book DOES (snapshotted
-    # on each perp_jev event). Never show spot's frozen macro as live context.
+    # NEWS: the LIVE book's actual signal — fresh Alpaca News API headlines
+    # written by the engine to stocks_news.json each scan (absent file → []).
+    # The OKX-era crypto catalyst.json/social.json feeds are retired with the
+    # venue and are no longer read.
+    news = read_stocks_news()
+    news_updated = max((n.get("ts") for n in news if n.get("ts")), default=None)
+    # MACRO: source-honest publishing. The stocks news book decides on company
+    # headlines; it does not inject an econ calendar. Never show the retired
+    # spot engine's frozen macro as live context.
     macro = {"source": None, "upcoming": [], "surprises": []}
-    if SPOT_BOOK_RETIRED and (perp or {}).get("strategy") == "momentum":
-        macro["source"] = "not-injected-into-live-book"
-        macro["note"] = ("The deterministic fade engine decides on 48h returns alone. "
-                         "Econ-calendar / macro events were injected by the retired spot engine, "
-                         "so there is no live macro context to show.")
-    elif SPOT_BOOK_RETIRED:
-        # v7.0-halogen: the LLM decision state carries the econ calendar again;
-        # the engine snapshots it on every perp_jev event (normalized to "jev").
-        _mj = next((e for e in reversed(live_events) if e.get("event") == "jev"), None)
-        macro = {"source": "live-model-state",
-                 "upcoming": (_mj or {}).get("macro_upcoming") or [],
-                 "surprises": (_mj or {}).get("macro_surprises") or [],
-                 "note": "Injected into every halogen decision state (econ calendar + surprise prints)."}
+    if live_ccy == "USD":
+        macro = {"source": "alpaca-news-headlines",
+                 "upcoming": [], "surprises": [],
+                 "note": ("The live book decides on fresh company headlines (Alpaca News API). "
+                          "No econ-calendar is injected; macro releases reach the book only "
+                          "insofar as they move the names it watches. The retired OKX spot "
+                          "engine's econ-calendar gating is history.")}
     elif jev_latest:
         st = None
         for e in reversed(events):
@@ -1924,12 +2384,18 @@ def build():
                  "upcoming": (st or {}).get("macro_events_24h", []),
                  "surprises": (st or {}).get("macro_released_3h_surprises", [])}
 
+    # SENTIMENT: crypto Fear&Greed / CoinGecko / funding panels retired with the
+    # OKX venue. Keys stay (None/empty) so the UI renders its retired notice
+    # instead of crashing or showing stale crypto polls as live context.
     sentiment = {
-        "fear_greed": social.get("fear_greed"),
-        "trending": social.get("trending", []),
-        "coins": social.get("coins", {}),
-        "updated": social.get("updated"),
-        "funding_bps": jev_latest.get("funding_bps") if jev_latest else None,
+        "fear_greed": None,
+        "trending": [],
+        "coins": {},
+        "updated": None,
+        "funding_bps": None,
+        "retired_note": ("Crypto sentiment feeds (Fear&Greed, CoinGecko polls, perp funding) "
+                         "retired 2026-11-19 with the OKX venue. The live book's context is "
+                         "stock-news headlines — see the NEWS panel."),
     }
 
     # Retired spot book: publish its FINAL record, derived from the log — not
@@ -1945,6 +2411,9 @@ def build():
     spot_jev_latest = build_jev_latest(events) if SPOT_BOOK_RETIRED else None
     spot_universe = (_load_json(os.path.join(BASE, "universe.json"), {}) or {}) \
         if SPOT_BOOK_RETIRED else {}
+    if SPOT_BOOK_RETIRED and not spot_universe:
+        # the OKX archive may rename retired files (*_okx_retired pattern)
+        spot_universe = _load_json(os.path.join(BASE, "universe_okx_retired.json"), {}) or {}
     spot_equity = build_equity(events, spot_trips) if SPOT_BOOK_RETIRED else {}
     # 10-24: header/version were STILL frozen at container-start values — the
     # ENGINE dict evaluates _engine_version()/_engine_header() at IMPORT time and
@@ -1954,7 +2423,7 @@ def build():
     # the 30s TTL cache keeps the re-parse cheap.
     ENGINE["version"] = _engine_version()
     ENGINE["header"] = _engine_header()
-    ENGINE["spot_book"]["version"] = _versions()["spot"]
+    ENGINE["spot_book"]["version"] = _versions()["spot"] or SPOT_FINAL_VERSION
     ENGINE["spot_book"]["trades_closed"] = spot_stats.get("trades_all")
     ENGINE["spot_book"]["net_eur"] = spot_stats.get("net_all_eur")
     ENGINE["spot_book"]["net_pct"] = spot_stats.get("net_all_pct")
@@ -1984,21 +2453,27 @@ def build():
         "last_event_ts": live_events[-1].get("ts") if live_events else (
             events[-1].get("ts") if events else None),
         "live_ccy": live_ccy,
-        "live_book": "X-PERPS" if live_ccy == "USD" else "SPOT",
+        "live_book": "STOCKS" if live_ccy == "USD" else "SPOT",
         # Live engine constants parsed from source for the ARCHITECTURE panel.
         "params": _live_params(),
         "build_ms": int((time.time() - t0) * 1000),
         "engine": ENGINE,
         "contact": CONTACT_LINE,
-        # The LIVE book's cooldown state, windows parsed from okx_perp.py. The
+        # The LIVE book's risk state (stocks: one-entry-per-symbol-per-day,
+        # 48h time exit, -8% breaker — parsed from alpaca_stocks.py). The
         # `risk` block below is the retired spot book's — kept for the record.
-        "live_risk": _perp_cooldowns(),
+        "live_risk": _live_risk(),
         "equity": equity,
         "stats": stats,
         # Retired spot book: its own frozen ledger, explicitly namespaced so no
         # panel can mistake it for live state. Same object the desk note was given
         # — one definition, so the two can never disagree.
         "retired_spot": retired_spot,
+        # Retired OKX X-Perp book: baked FINAL record (computed from the full
+        # OKX-era log at cutover — see OKX_RETIRED_RECORD). Frozen history;
+        # the live log file now carries Alpaca telemetry, so this block is the
+        # only place the OKX final numbers live on the deck.
+        "retired_okx": OKX_RETIRED_RECORD,
         "funnel": funnel,
         "scatter": scatter,
         "positions": positions,
@@ -2009,7 +2484,7 @@ def build():
         "tickers": tickers,
         "sparks": fetch_sparks(MARQUEE_INSTS[:6]),
         "news": news,
-        "news_updated": catalyst.get("updated"),
+        "news_updated": news_updated,
         "macro": macro,
         "sentiment": sentiment,
         "risk": {"day": risk.get("day"), "breaked": risk.get("breaked"),

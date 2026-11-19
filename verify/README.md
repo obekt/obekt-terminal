@@ -8,8 +8,11 @@ word for anything.
 
 - `engine/verify_snapshot.py` runs on an isolated systemd timer on the trading
   host (daily 00:03 UTC). It is **never imported by the trading engine** and
-  only ever calls OKX **GET** endpoints (`/account/balance`, `/account/positions`)
-  with the existing account key, plus counts events in the engine log.
+  only ever calls the venue's **GET** endpoints — Alpaca `/v2/account` +
+  `/v2/positions` now (OKX `/account/balance` + `/account/positions` through
+  2026-11-19) — with the existing account key, plus counts events in the engine
+  log. The chain continues unbroken across the venue change: same key, same
+  sequence; pre-cutover payloads carry `okx_*` keys, later ones `alpaca_*`.
 - Each snapshot is signed (ed25519) and appended to `chain.jsonl`, where every
   line embeds the hash of the previous raw line. Editing history breaks every
   later link.
@@ -30,9 +33,13 @@ embedded in it, then compares the head with the GitHub anchor
 
 ## Trust anchors
 
-1. `verify/pub.pem` — the signing public key (pinned verbatim inside `verify.py`).
+1. The signing **public key**, published verbatim inside `verify/verify.py`
+   (`PUBKEY_PEM`). That embedded copy is the trust anchor the verifier uses, so
+   you need no separate key file. (The signer keeps a local `pub.pem`; it is not
+   shipped in the repo — the key is public and lives in the verifier.)
 2. This repo's commit history — every head was committed by GitHub clock order.
-3. OKX itself — equity in each snapshot is what the exchange reported that day.
+3. The venue itself — equity in each snapshot is what the broker/exchange
+   reported that day (Alpaca now; OKX through 2026-11-19).
 
 ## Honest limits
 
@@ -46,6 +53,5 @@ embedded in it, then compares the head with the GitHub anchor
 | file | role |
 |---|---|
 | `engine/verify_snapshot.py` | signer (runs on the server; private key lives ONLY there, mode 600) |
-| `verify/verify.py` | public verifier (also served at trader.obekt.com/verify.py) |
-| `verify/pub.pem` | public key (pinned inside verify.py) |
+| `verify/verify.py` | public verifier (also served at trader.obekt.com/verify.py); the public key is embedded in it (`PUBKEY_PEM`) |
 | `verify/HEAD.json` | machine-anchored chain head, updated daily |

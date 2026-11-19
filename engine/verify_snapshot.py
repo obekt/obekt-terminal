@@ -3,10 +3,13 @@
 
 Runs on its OWN systemd timer (obekt-verify.timer, daily 00:03 UTC).
 NEVER imported by the trading engine; NEVER places orders. It reads:
-  - OKX account equity/positions via the EXISTING read of
-    ~/.config/okx/credentials.json (GET endpoints only),
+  - Alpaca account equity/positions via ~/.config/alpaca/credentials.json
+    (GET endpoints only),
   - the engine's event log (counts only),
-  - ENGINE_VERSION from okx_mom.py (single source for the version label).
+  - ENGINE_VERSION from alpaca_stocks.py (single source for the version label).
+VENUE CHANGE 2026-11-19: OKX X-Perps -> Alpaca US stocks. The chain continues
+unbroken (same key, same seq); pre-cutover entries carry okx_* payload keys,
+later entries carry alpaca_* keys.
 
 It appends a signed, hash-chained snapshot to chain.jsonl. Tampering with any
 historical line breaks every later link, and the current head is anchored to
@@ -30,13 +33,18 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-ENGINE_DIR = "/opt/trader/engine"
-STATE_DIR = "/opt/trader/state"
-VERIFY_DIR = "/opt/trader/verify"
+# Directories default to the repo layout (engine/, state/, verify/ siblings of
+# the base dir). Override any of them via env for a different deployment. The
+# script lives in engine/, so HERE is the engine dir; BASE defaults to its parent.
+HERE = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.expanduser(os.environ.get("OBKT_BASE_DIR", os.path.join(HERE, os.pardir)))
+ENGINE_DIR = os.path.expanduser(os.environ.get("OBKT_ENGINE_DIR", HERE))
+STATE_DIR = os.path.expanduser(os.environ.get("OBKT_STATE_DIR", os.path.join(BASE_DIR, "state")))
+VERIFY_DIR = os.path.expanduser(os.environ.get("OBKT_VERIFY_DIR", os.path.join(BASE_DIR, "verify")))
 CHAIN_NAME = "chain.jsonl"
 HEAD_NAME = "head.json"
 LOG = os.path.join(VERIFY_DIR, "verify.log")
-CRED_PATH = os.path.expanduser("~/.config/okx/credentials.json")
+CRED_PATH = os.path.expanduser("~/.config/alpaca/credentials.json")
 ANCHOR_REPO = "git@github.com:obekt/obekt-terminal"
 ANCHOR_KEY = os.path.join(VERIFY_DIR, "anchor_deploy")
 ANCHOR_DIR = os.path.join(VERIFY_DIR, "anchor")
@@ -53,32 +61,21 @@ def log(msg):
     print(line)
 
 
-def okx_get(path):
-    """Signed GET against OKX v5. Reuses the engine's credential file, read-only."""
-    import hmac
-    from hashlib import sha256 as h
+def alpaca_get(path):
+    """Read-only GET against Alpaca v2. Reuses the engine's credential file."""
     with open(CRED_PATH) as f:
         c = json.load(f)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    msg = ts + "GET" + path
-    sign = base64.b64encode(hmac.new(c["secret"].encode(), msg.encode(), h).digest()).decode()
     req = urllib.request.Request(
-        (c.get("base") or "https://www.okx.com") + path,
-        headers={
-            "OK-ACCESS-KEY": c["api_key"], "OK-ACCESS-SIGN": sign,
-            "OK-ACCESS-TIMESTAMP": ts, "OK-ACCESS-PASSPHRASE": c["passphrase"],
-            "User-Agent": "obekt-verify/1",
-        })
+        "https://api.alpaca.markets" + path,
+        headers={"APCA-API-KEY-ID": c["key"], "APCA-API-SECRET-KEY": c["secret"],
+                 "User-Agent": "obekt-verify/1"})
     with urllib.request.urlopen(req, timeout=20) as r:
-        out = json.loads(r.read().decode())
-    if out.get("code") != "0":
-        raise RuntimeError("OKX %s -> %s" % (path, out.get("msg")))
-    return out["data"]
+        return json.loads(r.read().decode())
 
 
 def engine_version():
     try:
-        src = open(os.path.join(ENGINE_DIR, "okx_mom.py")).read()
+        src = open(os.path.join(ENGINE_DIR, "alpaca_stocks.py")).read()
         m = re.search(r'^ENGINE_VERSION\s*=\s*["\']([^"\']+)["\']', src, re.M)
         return m.group(1) if m else "unknown"
     except Exception:
@@ -101,25 +98,24 @@ def log_counts():
 
 
 def build_payload():
-    bal = okx_get("/api/v5/account/balance?ccy=USDC")
-    d = bal[0]["details"][0] if bal and bal[0].get("details") else {}
-    pos = okx_get("/api/v5/account/positions")
+    acct = alpaca_get("/v2/account")
+    pos = alpaca_get("/v2/positions")
     o, c = log_counts()
     return {
         "engine": engine_version(),
-        "okx_equity_usdc": float(d["eq"]) if d.get("eq") else None,
-        "okx_available_usdc": float(d["availBal"]) if d.get("availBal") else None,
-        "okx_isolated_equity_usdc": float(d["isoEq"]) if d.get("isoEq") else None,
-        "okx_unrealized_pnl_usdc": float(d["upl"]) if d.get("upl") else None,
+        "venue": "alpaca_us_equities",
+        "alpaca_equity_usd": float(acct.get("equity") or 0),
+        "alpaca_cash_usd": float(acct.get("cash") or 0),
+        "alpaca_buying_power": float(acct.get("buying_power") or 0),
         "open_positions": [
-            {"inst": p.get("instId"), "side": p.get("posSide"),
-             "pos": float(p.get("pos") or 0), "avg_px": float(p.get("avgPx") or 0),
-             "upl_usdc": float(p.get("upl") or 0), "lever": p.get("lever")}
-            for p in pos if float(p.get("pos") or 0) != 0
+            {"inst": p.get("symbol"), "side": p.get("side"),
+             "pos": float(p.get("qty") or 0), "avg_px": float(p.get("avg_entry_price") or 0),
+             "upl_usd": float(p.get("unrealized_pl") or 0)}
+            for p in pos if p.get("asset_class") == "us_equity" and float(p.get("qty") or 0) != 0
         ],
         "engine_log_opens": o,
         "engine_log_closes": c,
-        "method": "okx_get_account_balance+positions; log event counts; no LLM",
+        "method": "alpaca_get_account+positions; log event counts; no LLM",
     }
 
 

@@ -1,6 +1,6 @@
 ---
 name: okx-trading
-description: "Use when trading crypto on OKX Europe (EEA) spot."
+description: "RETIRED venue — historical OKX Europe (EEA) crypto reference. Live venue is alpaca-trading."
 version: 1.0.0
 author: Hermes Agent
 metadata:
@@ -10,15 +10,26 @@ metadata:
 
 # OKX Europe (EEA) Crypto Trading
 
+> **RETIRED 2026-11-19 — venue moved to Alpaca US stocks** (operator directive:
+> real stocks, decisions from stock news). The OKX account value was moved to
+> Alpaca ($123.53 landed); engine telemetry is archived `*_okx_retired` on the
+> VPS. **The procedures below are HISTORICAL reference, not a live system.**
+> Live venue: the [`alpaca-trading`](../alpaca-trading/SKILL.md) skill.
+> Final OKX X-Perp record: **426 closes, 40.8% WR, −$26.68 net of all fees on
+> $134.19 capital** (2026-10-15→11-19, last engine v10.0-fade). The earlier spot
+> EUR book retired 2026-10-15 (132 trades, −€21.03). LESSON: validated edges
+> DECAY — re-validate on fresh data, fees and leverage before reviving any
+> retired engine.
+
 OBSERVATION TERMINAL: the read-only web deck that renders this engine's log
 lives in `terminal/` (see its README). It is generated from the engine's JSONL
 telemetry + public market data only and never touches exchange credentials.
 
 Venue: eea.okx.com (EEA), v5 REST. Spot, EUR-quoted pairs, long-only scalping.
-The pilot is `engine/okx_jev.py` — Jev decides, code acts (decision-model
-rules in the `system-one-decisions` skill; venue specifics here). Run it from
+The retired pilot was `engine/okx_jev.py` — Jev decided, code acted (decision-model
+rules in the `system-one-decisions` skill; venue specifics here). It ran from
 cron every 5 minutes: `*/5 * * * * python3 engine/okx_jev.py cycle`.
-Strategy directive: fast trades, take profit immediately, volume regime.
+Strategy directive (historical): fast trades, take profit immediately, volume regime.
 
 ## 0. Auth — TWO independent paths
 

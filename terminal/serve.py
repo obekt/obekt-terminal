@@ -47,7 +47,7 @@ def absolutize_og(html):
     html = re.sub(r'((?:og:image|twitter:image)" content=")(og\.png)', fix, html)
     if "<!--OGABS-->" in html:
         extra = ('<meta property="og:url" content="%s/">\n'
-                 '<meta name="twitter:title" content="OBEKT TERMINAL — autonomous crypto scalping, live">\n'
+                 '<meta name="twitter:title" content="OBEKT TERMINAL — autonomous US-stock news trading, live">\n'
                  % PUBLIC_BASE)
         html = html.replace("<!--OGABS-->", extra)
     return html

@@ -4,6 +4,11 @@ A Bloomberg-style text UI over the engine's live telemetry. Pure HTML/CSS/JS —
 **no framework, no build step, no CDN**. A generator turns the engine's JSONL
 log into a static `data.js`; the page renders it and re-polls every 10 seconds.
 
+**Venue:** the live book is **Alpaca US stocks** (news-driven, long-only) since
+2026-11-19. The deck is **stocks-first**; the retired OKX crypto books (X-Perps +
+spot EUR) and their sentiment feeds live in one **collapsed `RETIRED BOOKS` block**
+at the bottom, with their final losing records intact.
+
 **It is observation-only by construction.** `cursor:default`, `user-select:none`,
 no links or handlers anywhere except the trade-ledger replay viewer. You cannot
 place an order from this page. That's deliberate — it's a window into a machine
@@ -24,13 +29,18 @@ python3 -m http.server 8770
 # → http://localhost:8770
 ```
 
-Every panel, chart, and click-to-replay dossier works off that sample data.
+Every panel and chart works off that sample data. The live stocks book has no
+closed trades yet, so the ledger shows its honest empty state (each row will link
+to a decision replay once the first fill lands). The replay viewer is wired and
+the 500+ retired OKX dossiers are retained in `sample_data/dossiers/`.
 
 ## Run it against the live engine
 
 ```bash
 cd terminal
-export OKX_TERMINAL_BASE=~/.hermes/workspace/okx     # dir holding okx_jev_log.jsonl + state
+# OKX_TERMINAL_BASE is a HISTORICAL env name (kept for compatibility); it now
+# points at the Alpaca engine's dir — the one holding perp_log.jsonl + state.
+export OKX_TERMINAL_BASE=/path/to/engine
 python3 serve.py --port 8770                          # rebuilds data.js every 45s, serves the page
 ```
 
@@ -57,33 +67,35 @@ so a local model costs nothing but compute. We run a Qwen-3-class flash model on
 a self-hosted relay — the point is the *decision* model is separate and typed;
 this LLM only ever **explains** facts already in the engine state.
 
-## What's on screen (25 panels)
+## What's on screen
 
-- **Hero strip** — equity, day P&L, cycles run, Jev calls, latest vote, uptime, model cost.
-- **Session-liveness strip** — counts events/entries/exits *since you opened the tab*, so you can watch it work in real time.
+**Live (stocks) panels:**
+- **Hero strip** — equity (USD), day P&L, cycles run, model calls, latest vote, uptime, model cost ($0 marginal).
+- **Session-liveness strip** — counts events/entries/exits *since you opened the tab*.
 - **Desk note** — the local LLM's read of the tape.
-- **Performance** — win rate, profit factor, avg win/loss, streaks, best/worst, fees.
-- **Latest Jev call** — probability bars + what the engine *did* (`▸ ORDER SENT` / `✕ BLOCKED BY RISK LAYER`).
-- **Decision gates** — the ✓/✕ checklist (margin, conf, noul, depth floor, breaker, cooldowns).
-- **Equity curve** — SVG, every closed trade, peak/trough labeled.
-- **Selectivity funnel** — pair-scans → filters → Jev evals → buy votes → opens (why it trades rarely).
-- **Decision scatter** — every buy-vote as margin×noul vs the engine bars, colored by outcome. Grey = model wanted in, code said no.
-- **Exit-engine breakdown · P&L by hour · P&L per instrument.**
-- **Universe scan · Open positions** (live uPnL + 5m candle track + protection state).
-- **News · Sentiment · Macro** — the exact context riding in the prompt.
-- **Jev vote tape · Daily P&L · Architecture · Model stack · Cost optimization · Decision economics.**
-- **Trade ledger** — **click any row → full decision replay.**
-- **Event tape** — the raw log; new rows flash.
+- **US Stocks — the live book** — equity, realized %, win rate, last halogen call (vote + confidence bar + impact + headline + rationale), status, open positions (engine-managed TP/SL), recent closed, scanned universe.
+- **Decision gates** — the ✓/✕ checklist (news freshness, market hours, spread/ask/quote pre-gates, chase/knife, conf floor, impact, slots, bracket geometry, breaker, one-entry-per-symbol-per-day). Constants parsed from the engine source.
+- **Equity curve · Selectivity funnel · Decision scatter** (stocks axes: confidence × day-move) **· Exit-engine breakdown · P&L by hour · P&L per symbol.**
+- **Universe scan** — the fixed 30-name list + day movers from the engine's own price context.
+- **News** — the LIVE signal: fresh Alpaca News API headlines from `stocks_news.json`.
+- **Decision vote tape · Daily P&L · Architecture · Model stack · Cost optimization · Decision economics.**
+- **Trade ledger** — **click any row → full decision replay** (honest empty state until the first close).
+- **Event tape** — the raw log as SCAN / GATE / MODEL / FILL / EXIT / RISK rows; new rows flash.
+
+**Retired (collapsed `RETIRED BOOKS` block):** the OKX X-Perp final record (426
+closes, 40.8% WR, −$26.68 net), the spot EUR record (132 trades, −€21.03), their
+ledgers/replays, and the crypto sentiment feeds — all labelled retired, never
+narrated as current.
 
 ### The decision-replay dossier (the click-any-trade view)
 
 Each closed trade has an immutable `dossiers/<tid>.json` rendering:
-0. **candlestick chart** (real OKX 5m OHLC) with ▲entry / ▼exit + cyan TP / red SL lines and ◈ trail-arm ticks
-1. the model vote (probabilities + pick/conf/margin/noul)
-2. the exact market state Jev was shown (all candidate pairs, cash, stake, funding, prompt size)
-3. the news + sentiment + macro that were in that prompt
+0. **candlestick chart** (keyless Yahoo Finance 5m OHLC) with ▲entry / ▼exit + cyan TP / red SL lines
+1. the model vote (stocks: confidence + impact + rationale; retired OKX: probabilities + margin/noul)
+2. the exact market state the model was shown (stocks: the headline + price context; retired: candidate pairs, funding, prompt size)
+3. the news catalyst that was in the prompt (stocks: the headline IS the signal)
 4. the pre-entry gauntlet it survived + its bracket
-5. the full lifecycle timeline (entry → trail arms → exit)
+5. the full lifecycle timeline (entry → exit signals → exit)
 6. the ledger outcome + an LLM post-mortem + a verbatim excerpt of the strategy prompt
 
 ## Files
@@ -91,17 +103,19 @@ Each closed trade has an immutable `dossiers/<tid>.json` rendering:
 | file | role |
 |---|---|
 | `index.html` `style.css` `app.js` | the UI (no deps) |
-| `generate.py` | engine log + public market data (+ optional LLM) → `data.js` / `data.json` / `dossiers/` / `og.png`. **Read-only over the engine; never signs requests, never reads exchange keys.** |
+| `generate.py` | engine log + keyless Yahoo Finance market data (+ optional LLM) → `data.js` / `data.json` / `dossiers/` / `og.png`. **Read-only over the engine; never signs requests, never reads broker keys.** |
 | `serve.py` | static server + 45s rebuild loop; injects absolute OG urls when `PUBLIC_BASE` is set; tiered cache headers |
 | `make_og.py` | renders the 1200×630 Open Graph share card (Pillow) so shared links preview live numbers |
 | `deploy.sh` | one-shot build + rsync a clean static bundle to a web root or `user@host:path` |
+| `sync-telemetry.sh` | optional whitelist rsync bridge: engine host → deck host (stocks-era `perp_*` files + retired spot history) |
+| `refresh-sample.sh` | gated `sample_data/` refresh (fetch → secret-scan → schema-check → swap) |
 | `sample_data/` | frozen real telemetry for zero-credential preview |
 
 ## Environment variables
 
 | var | default | purpose |
 |---|---|---|
-| `OKX_TERMINAL_BASE` | `~/.hermes/workspace/okx` | engine workspace to read |
+| `OKX_TERMINAL_BASE` | `~/.hermes/workspace/okx` | **historical name** — engine telemetry dir to read (the Alpaca engine's dir, holding `perp_log.jsonl`) |
 | `TERMINAL_STATE_DIR` | *(the code dir)* | where generated artifacts land (`dossiers/`, `data.js`, `og.png`, caches). Point at a persistent path/volume so a restart doesn't re-spend LLM calls |
 | `TERMINAL_LLM_URL` | `http://localhost:1234/v1/chat/completions` | desk-commentary endpoint (any OpenAI-compatible) |
 | `TERMINAL_LLM_MODEL` | `qwen3-flash` | model name at that endpoint |
@@ -129,7 +143,8 @@ only. Set `PUBLIC_BASE` so link previews on X/Telegram/etc. resolve the OG image
 
 ## Safety
 
-`generate.py` **never writes to the engine workspace, never signs exchange
+`generate.py` **never writes to the engine workspace, never signs broker
 requests, and never reads `credentials.json`.** Its inputs are the JSONL/JSON
-state files, public market endpoints, and (optionally) the LLM relay. Its only
-writes are inside `terminal/` (`data.js`, `og.png`, `dossiers/`, caches).
+state files, keyless public market endpoints (Yahoo Finance), and (optionally) the
+LLM relay. Its only writes are inside `terminal/` (`data.js`, `og.png`,
+`dossiers/`, caches).

@@ -5,14 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="index,follow">
 <title>Obekt Autonomous Trading Platform — live telemetry</title>
-<meta name="description" content="A read-only Bloomberg-style terminal over a live deterministic crypto trading engine on real capital, with a cryptographically signed, GitHub-anchored track record. Open-source. Not financial advice — a pure experiment.">
+<meta name="description" content="A read-only Bloomberg-style terminal over a live news-driven US-stock trading engine (Alpaca, long-only) on real capital, with a cryptographically signed, GitHub-anchored track record. Open-source. Not financial advice — a pure experiment.">
 <meta property="og:title" content="OBEKT TERMINAL — watch an autonomous trading system think, live">
-<meta property="og:description" content="A real trading bot on real capital: every decision and fill streamed into a Bloomberg-style terminal, plus a daily signed, GitHub-anchored track record you can verify yourself. Observation only — the machine runs itself.">
+<meta property="og:description" content="A real stock-trading bot on real capital: fresh news headlines → self-hosted LLM decisions → deterministic risk gates, every decision and fill streamed into a Bloomberg-style terminal, plus a daily signed, GitHub-anchored track record you can verify yourself. Observation only — the machine runs itself.">
 <meta property="og:type" content="website">
 <meta property="og:image" content="og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
-<meta property="og:image:alt" content="OBEKT TERMINAL live stats: equity, day P&L, Jev vote, selectivity funnel and cumulative P&L curve">
+<meta property="og:image:alt" content="OBEKT TERMINAL live stats: equity, day P&L, halogen news vote, selectivity funnel and cumulative P&L curve">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="og.png">
 <!--OGABS-->
@@ -46,7 +46,7 @@
   </section>
 
   <section class="panel wide" id="p-perp">
-    <h2>X-PERPS — THE LIVE BOOK (LONG + SHORT, USDC) <em id="perp-meta">OKX Europe X-Perps (MiFID) · USDC collateral · 2x isolated · long &amp; short</em></h2>
+    <h2>US STOCKS — THE LIVE BOOK (LONG-ONLY, USD) <em id="perp-meta">Alpaca US equities · USD cash · commission-free · regular hours 09:30–16:00 ET</em></h2>
     <div class="body" id="perp-body">—</div>
   </section>
 
@@ -54,24 +54,6 @@
     <h2>DESK NOTE <em id="desk-model"></em></h2>
     <div class="body"><pre id="desk-note">AWAITING LLM DESK COMMENTARY…</pre>
     <div id="decision-line" class="decision-line"></div></div>
-  </section>
-
-  <!-- the spot book was RETIRED 2026-10-15 (capital consolidated into X-Perps at
-       operator direction). Its panels remain as an honest historical record:
-       the engine code, the 132-trade ledger and the replay are all real. -->
-  <section class="panel wide retired" id="p-pos">
-    <h2>OPEN POSITIONS — SPOT <em id="spot-retired-tag">RETIRED 2026-10-15 · long-only EUR book · no longer trading</em></h2>
-    <div class="body" id="pos-body">—</div>
-  </section>
-
-  <section class="panel retired" id="p-perf">
-    <h2>PERFORMANCE — SPOT RECORD <em id="spot-perf-tag">RETIRED · EUR · final ledger</em></h2>
-    <div class="body" id="perf-body">—</div>
-  </section>
-
-  <section class="panel retired" id="p-jev">
-    <h2>JEV SYSTEM-ONE — SPOT CALL <em id="spot-jev-tag">RETIRED · historical decisions from the long-only EUR book</em></h2>
-    <div class="body" id="jev-body">—</div>
   </section>
 
   <section class="panel" id="p-gates">
@@ -89,7 +71,6 @@
     <div class="body" id="funnel-body">—</div>
   </section>
 
-
   <section class="panel" id="p-exits">
     <h2>EXIT ENGINE BREAKDOWN</h2>
     <div class="body" id="exits-body">—</div>
@@ -100,37 +81,32 @@
     <div class="body" id="hours-body">—</div>
   </section>
   <section class="panel wide" id="p-scatter">
-    <h2>DECISION SCATTER — EVERY JEV VOTE vs THE ENGINE BAR <em>last 120 votes · x = margin p(chosen)−p(no_trade) · y = noul</em></h2>
+    <h2>DECISION SCATTER — EVERY BUY VOTE vs THE ENGINE BAR <em>last 120 votes · live stocks axes: x = halogen confidence · y = day move at call</em></h2>
     <div class="body" id="scatter-body">—</div>
   </section>
 
   <section class="panel wide" id="p-universe">
-    <h2>UNIVERSE SCAN — LIVE X-PERPS + RETIRED SPOT <em>the X-Perp engine scans USD contracts (live) · the retired spot engine's EUR-pair scan is shown for the record</em></h2>
+    <h2>UNIVERSE SCAN — LIVE STOCKS <em>the engine scans a fixed 30-name US-stock universe for fresh news every cycle · day movers from its own price context</em></h2>
     <div class="body" id="universe-body">—</div>
   </section>
 
-  <!-- NEWS / SENTIMENT / MACRO are OBSERVER context, not live decision inputs.
-       They were written by the retired spot engine (keyless RSS + CoinGecko +
-       alternative.me + econ calendar). The live X-Perp engine injects funding +
-       multi-timeframe momentum only, so these panels are labelled as such rather
-       than implying they gate live entries. -->
+  <!-- NEWS is the LIVE book's signal (Alpaca News API headlines, written by the
+       engine to stocks_news.json each scan). SENTIMENT / MACRO are retired with
+       the OKX venue: crypto Fear&Greed / CoinGecko / funding and the spot econ
+       calendar no longer apply, and the panels say so instead of implying they
+       gate live entries. -->
   <section class="panel" id="p-news">
-    <h2>NEWS CATALYSTS <em id="news-tag">OBSERVER CONTEXT — NOT IN THE LIVE BOOK'S PROMPT</em> <em id="news-age"></em></h2>
+    <h2>NEWS CATALYSTS <em id="news-tag">LIVE SIGNAL — ALPACA NEWS API (FRESH HEADLINES)</em> <em id="news-age"></em></h2>
     <div class="body" id="news-body">—</div>
   </section>
 
-  <section class="panel" id="p-sent">
-    <h2>SENTIMENT / SOCIAL <em id="sent-tag">OBSERVER CONTEXT — KEYLESS FEEDS</em></h2>
-    <div class="body" id="sent-body">—</div>
-  </section>
-
   <section class="panel" id="p-macro">
-    <h2>MACRO DESK <em id="macro-tag">ECON CALENDAR — RETIRED SPOT ENGINE ONLY</em></h2>
+    <h2>MACRO DESK <em id="macro-tag">NOT INJECTED — LIVE BOOK DECIDES ON COMPANY NEWS</em></h2>
     <div class="body" id="macro-body">—</div>
   </section>
 
   <section class="panel" id="p-hist">
-    <h2>JEV VOTE TAPE <em>last 40 calls</em></h2>
+    <h2>DECISION VOTE TAPE <em>last 40 calls</em></h2>
     <div class="body" id="hist-body">—</div>
   </section>
 
@@ -174,6 +150,49 @@
     <div class="body" id="tape-body">—</div>
   </section>
 
+  <!-- Retired books: full frozen records, collapsed by default. The live page
+       is stocks-first; the honest track record (losses included) stays public
+       and verifiable here and on /verify. -->
+  <section class="panel wide" id="p-history">
+    <h2>RETIRED BOOKS — FROZEN HISTORY <em>OKX X-PERPS (09-28→11-19) · SPOT EUR (→10-15) · kept for the record, never trading again</em></h2>
+    <details id="history-details">
+      <summary style="cursor:pointer;color:var(--amber);padding:6px 2px;font-size:11px;letter-spacing:.5px">▸ EXPAND THE RETIRED RECORDS — OKX: 426 closes, −$26.68 net of all fees · SPOT: 132 trades, −€21.03 · crypto sentiment feeds (full ledgers + replays retained)</summary>
+      <div style="margin-top:8px">
+  <!-- The OKX X-Perp book was RETIRED 2026-11-19 (venue moved to Alpaca US
+       stocks at operator directive). Its final stats are baked from the full
+       OKX-era log; the history files are retained. -->
+  <section class="panel wide retired" id="p-okx">
+    <h2>OKX X-PERPS — RETIRED BOOK <em id="okx-retired-tag">RETIRED 2026-11-19 · venue moved to Alpaca US stocks (operator directive)</em></h2>
+    <div class="body" id="okx-body">—</div>
+  </section>
+
+  <!-- the spot book was RETIRED 2026-10-15 (capital consolidated into X-Perps at
+       operator direction; the X-Perp book itself retired 2026-11-19). Its panels
+       remain as an honest historical record: the engine code, the 132-trade
+       ledger and the replay are all real. -->
+  <section class="panel wide retired" id="p-pos">
+    <h2>OPEN POSITIONS — SPOT <em id="spot-retired-tag">RETIRED 2026-10-15 · long-only EUR book · no longer trading</em></h2>
+    <div class="body" id="pos-body">—</div>
+  </section>
+
+  <section class="panel retired" id="p-perf">
+    <h2>PERFORMANCE — SPOT RECORD <em id="spot-perf-tag">RETIRED · EUR · final ledger</em></h2>
+    <div class="body" id="perf-body">—</div>
+  </section>
+
+  <section class="panel retired" id="p-jev">
+    <h2>JEV SYSTEM-ONE — SPOT CALL <em id="spot-jev-tag">RETIRED · historical decisions from the long-only EUR book</em></h2>
+    <div class="body" id="jev-body">—</div>
+  </section>
+
+  <section class="panel" id="p-sent">
+    <h2>SENTIMENT / SOCIAL <em id="sent-tag">RETIRED WITH THE OKX VENUE — 2026-11-19</em></h2>
+    <div class="body" id="sent-body">—</div>
+  </section>
+      </div>
+    </details>
+  </section>
+
 </main>
 
 <div id="waitlist">
@@ -192,7 +211,7 @@
      title="Open-source: the engine, this terminal, and the agent skills">⌥ SOURCE · github.com/obekt/obekt-terminal</a>
   <div id="gen">—</div>
 </footer>
-<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL, SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER, THE /VERIFY PAGE, THE WAITLIST FORM AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: OKX EUROPE PUBLIC FEED · DECISIONS: SELF-HOSTED HALOGEN-QWEN3.8-FLASH-NEXT (TYPED JSON, SCHEMA-CHECKED, FAILS CLOSED) · DESK COPY: SAME MODEL, OBSERVER ONLY · TRACK RECORD: DAILY SIGNED SNAPSHOTS, CHAIN ANCHORED ON GITHUB → /VERIFY<span class="cursor">█</span></div>
+<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL IN US STOCKS ON ALPACA (LONG-ONLY, NEWS-DRIVEN), SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER, THE /VERIFY PAGE, THE WAITLIST FORM AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: YAHOO FINANCE PUBLIC FEED · DECISIONS: SELF-HOSTED HALOGEN-QWEN3.8-FLASH-NEXT (TYPED JSON NEWS CALLS, SCHEMA-CHECKED, FAILS CLOSED) · DESK COPY: SAME MODEL, OBSERVER ONLY · TRACK RECORD: DAILY SIGNED SNAPSHOTS, CHAIN ANCHORED ON GITHUB → /VERIFY<span class="cursor">█</span></div>
 
 <div id="modal-root"></div>
 

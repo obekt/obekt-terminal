@@ -4,7 +4,7 @@ Read-only. Printed fields feed the Mac-side watchdog signature."""
 import json, os, subprocess, time
 from datetime import datetime
 
-HERE = "/opt/trader/engine"
+HERE = os.path.dirname(os.path.abspath(__file__))
 out = {}
 now = time.time()
 out["hour_bucket"] = int(now // 3600) % 24  # age proxy for re-fire on persistent DEAD/UNREACHABLE

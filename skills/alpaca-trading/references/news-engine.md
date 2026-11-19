@@ -1,0 +1,108 @@
+# News-driven stock engine: design, LLM contract, validation, telemetry
+
+Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
+
+## Pipeline + deterministic gates (code owns risk; LLM never overrides)
+
+1. Clock: entries/exits only while `is_open` (regular hours). Outside hours:
+   scan + accumulate news, defer exits to next open (log the deferral).
+2. News scan: fresh headlines (90-min window) on a ~30-name liquid universe,
+   dedupe by id, one evaluation per headline, one entry per symbol per day.
+   On the closed→open transition widen the window to ~18h so overnight and
+   pre-market catalysts are visible at the open.
+3. Pre-gates BEFORE spending an LLM call: ask-vs-last deviation ≤ 2.5%
+   (ghost-quote guard), quote age ≤ 90s, day-change chase cap (+7%) and
+   knife floor (−9%). The spread gate is a 10% disaster guard ONLY — IEX BBO
+   spread is not the NBBO (routinely 2–4% on liquid names) and Alpaca routes
+   to the inside market; tight IEX spread/ask gates (1%/0.35%) rejected most
+   legitimate candidates (TSLA, COIN) while measuring nothing about real
+   execution cost. News fetch: the API `start` param is unreliable (returned
+   0 rows for valid windows while fresh items existed) — fetch newest pages
+   WITHOUT start, filter created_at client-side, stop when items predate the
+   cutoff (12-page cap).
+4. LLM decision (≤4 calls/cycle): halogen via chat.obekt.com/v1, temp ~0.2,
+   strict-JSON system prompt. Schema: action buy|no_trade, confidence 0–1,
+   impact high|medium|low, target_pct, stop_pct, horizon_hours, rationale.
+5. Post-gates: confidence ≥ 0.60 (burn-in bar; recalibrate after ~30 calls),
+   impact ≠ low, slots free (MAX_OPEN 2).
+6. Sizing: equity × 0.98 / MAX_OPEN per leg, fractional qty = budget/ask,
+   min $1 notional; hard notional bug-guard far above equity.
+7. Brackets: TP clamp [1, 5]%, SL clamp [0.8, 3]%, enforce TP ≥ 1.5×SL;
+   engine-managed (no server brackets on fractional). Time exit 48h.
+8. Daily breaker: equity ≤ day-start × 0.92 → STOP file marked
+   `breaker <date>`, auto-clears on UTC rollover; manual STOP/STOP_PERP
+   persists. Orphan reconciliation every cycle (adopt exchange positions
+   without meta; log vanished ones) — never fly blind.
+
+## LLM decision contract robustness
+
+- Parse ladder: direct json.loads → outermost balanced-brace block →
+  field-level regex for action/confidence/impact/target/stop (rationale
+  optional). Only truly unparseable output fails closed.
+- Require valid brackets ONLY for action=buy; no_trade legitimately carries
+  0/missing targets — asserting brackets on every answer mislabels valid
+  no_trades as errors and can starve the book.
+- Prompt: "no prose outside JSON; never use double-quote characters inside
+  rationale" — the rationale string is where models break JSON.
+- Fail-closed events: log the error WITH a snippet of the raw answer (debug
+  visibility) + a no_trade event; never let an LLM exception crash the cycle.
+- Unit-test recipe: call the decision function directly with (a) a synthetic
+  strong catalyst (guidance raise + buyback) against live price context →
+  expect buy with sane conf/brackets, (b) a noise item (conference appearance)
+  → expect no_trade. Live news often gate-rejects before the LLM, so a clean
+  dry cycle does NOT prove the LLM path works.
+
+## Pre-live validation: news→drift study (cheap, honest)
+
+1. Collect N days of headlines for ~8 universe names (news API, paginated).
+2. Fetch hourly bars over the same window (IEX if SIP 403s on long ranges).
+3. Measure signed + absolute drift at t+4h / t+24h trading hours after each
+   headline vs the UNCONDITIONAL all-hours baseline.
+4. Read it honestly: if post-news |drift| ≤ baseline, raw headlines have no
+   blind edge — the LLM catalyst filter IS the strategy hypothesis; say so.
+   Calibrate TP/SL to the measured post-news move distribution (e.g. p90
+   |4h move| ~2.3% → TP 1–3% reachable on real catalysts).
+5. News-driven LLM decisions cannot be cleanly backtested (historical
+   news+point-in-time context is leaky/expensive) — launch with a
+   pre-registered kill-gate instead of a fake backtest number.
+
+## Telemetry contract (deck + chain compatibility)
+
+The engine REUSES the OKX-era filenames and event vocabulary so the public
+deck's `normalize_perp_events` adapter and the signed chain keep working:
+
+- `perp_log.jsonl` events: perp_open {inst, side, contracts, notional_usd,
+  fill_px, conf, realized_fee, entry_type, headline, bracket}, perp_close
+  {inst, side, reason, upc, age_min, fill_px, realized_fee, notional_usd},
+  perp_close_detected, perp_jev {choice: buy_<SYM>|no_trade, chosen_inst,
+  chosen_side, conf, noul, probabilities:{buy_<SYM>:conf}, pairs:[{inst,
+  base, headline, impact, day_chg_pct, target_pct, stop_pct}],
+  collateral_usdc, budget_usd, input_tokens, output_tokens, rationale},
+  perp_no_trade, perp_gate_reject, perp_universe, mom_scan {signal:"news",
+  longs/top/bottom: (sym, day_chg) tuples, shorts: []}, mom_heartbeat,
+  perp_dry_open. Every record: ts, engine, strategy, dry.
+- `perp_positions.json` meta keyed by SYMBOL: opened_ts, side, contracts,
+  entry_ref, notional_usd, strategy, news_headline, jev_conf, bracket,
+  hwm_pct, algo_ok:false, entry_ordId, max_hold_h.
+- `perp_status.json`: engine (ENGINE_VERSION), usdc_equity (KEY NAME IS
+  HISTORICAL — value is Alpaca USD equity), eur_float:0, account_total_usd,
+  collateral_ccy:"USD", halted, dry, n_positions, positions[], strategy,
+  venue, ts. The deck and signer read this file; keep the shape.
+- `stocks_news.json`: [{ts, headline, symbols, source, url}] top-12 cache
+  for the deck news panel; reader must tolerate absence.
+- Deck version labels parse ENGINE_VERSION from the engine SOURCE — point
+  the parser at the new file; never hardcode.
+- At cutover: archive old-era files to `*_okx_retired`, start fresh logs;
+  the signed chain continues unbroken (same key/seq), payload keys gain
+  venue-specific names (alpaca_equity_usd) — keep verifier display branches
+  tolerant of both eras. Capital base for realized-% = money actually put
+  into the NEW book (single capital event at cutover), not the old venue's.
+  Archive the RETIRED SPOT book's risk_state.json/positions.json too — the
+  deck reads them and will render months-old EUR cooldowns as current risk.
+- Deck tape rendering: stocks perp_jev events must render as kind MODEL with
+  the rationale text — the legacy JEV kind + `p[buy_X=conf]` format misreads
+  a no_trade's confidence as a buy probability. Empty panels need explicit
+  "no closed trades / no model calls yet" states, and panel copy must name
+  the TRUE data source (the deck reads the engine log of Alpaca fills, not a
+  fills ledger). After a venue rebrand, audit EVERY live-path renderer string
+  (grep X-PERP/USDC/OKX/JEV) — header-only checks miss panel bodies.

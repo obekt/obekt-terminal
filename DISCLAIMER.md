@@ -16,13 +16,16 @@ typed decision-model plus deterministic risk code operate a real trading loop
 autonomously, and what does that actually look like?* The answer, so far, is
 "instructive" — including the parts that lose money.
 
-The live results shown in the screenshots and sample data are **real and mixed**.
-Over the sample window the system had a win rate around 38%, a profit factor
-**below 1.0**, and a small **net loss** after fees. We publish the losing trades,
-the red days, and the worst trade because hiding them would make this dishonest.
-A scalping strategy on retail crypto spot pays a heavy fee toll, and beating it
-consistently is genuinely hard. **Do not assume this system makes money. Over the
-period shown, it did not.**
+The live results shown in the screenshots and sample data are **real**. The
+retired crypto books finished at a loss: the OKX X-Perp book closed **426 trades
+at a 40.8% win rate for −$26.68 net of all fees**, and the spot EUR book **132
+trades for −€21.03** (profit factor 0.62). The current live book — news-driven
+US stocks on Alpaca — has **no demonstrated edge yet**: it launched with a
+pre-registered kill-gate (30 closed trades or 14 days, net ≤ 0 → replace the
+algorithm). We publish the losing trades, the red days, and the flat no-trade
+cycles because hiding them would make this dishonest. Beating the market
+consistently is genuinely hard. **Do not assume this system makes money. The
+retired books did not, and the live book is unproven.**
 
 ## Trading real money can lose all of it
 
@@ -34,8 +37,9 @@ Automated trading carries extreme risk:
 - Leverage, if you add it, can lose **more** than you deposited.
 - Past behavior — including the live history in this repo — says nothing about
   future results.
-- Crypto markets are volatile, manipulated, and adversarial. Spreads widen and
-  books thin exactly when you least want them to.
+- Markets are volatile and adversarial. Spreads widen and liquidity thins exactly
+  when you least want them to. US stocks **gap overnight and on weekends** — a
+  stop cannot execute while the market is closed, so losses can exceed the stop.
 
 ## You are solely responsible
 
@@ -52,16 +56,17 @@ loss, and every consequence is yours alone.** The authors and contributors:
 - Use **demo/paper accounts** first if your venue offers them.
 - Never trade money you cannot afford to lose completely.
 - Understand every line before you fund it — especially the risk constants.
-- Check your local laws; automated trading and crypto may be restricted or
-  regulated where you live. Compliance is your responsibility.
+- Check your local laws; automated trading may be restricted or regulated where
+  you live, and broker eligibility varies by jurisdiction. Compliance is your
+  responsibility.
 - Keep your API keys scoped down (read + trade only, **no withdrawal**),
   IP-whitelisted, and secret. This repo never asks for withdrawal permission.
 
 ## No affiliation or endorsement
 
-"Jev"/TypeSafe, OKX, and any model or vendor named here are the property of their
-respective owners. Their mention describes what this experiment used; it is not an
-endorsement of this project by them.
+Alpaca, OKX, "Jev"/TypeSafe, and any model or vendor named here are the property
+of their respective owners. Their mention describes what this experiment used; it
+is not an endorsement of this project by them.
 
 ---
 

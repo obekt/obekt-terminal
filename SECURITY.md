@@ -6,11 +6,12 @@ This repository is designed so that **no secret ever lives in the tree.**
 
 | Thing | In the repo? | Where it lives |
 |---|---|---|
-| Exchange API key/secret/passphrase | ❌ never | `~/.config/okx/credentials.json` **or** `OKX_API_KEY`/`OKX_SECRET`/`OKX_PASSPHRASE` env vars |
-| Decision-model (Jev) API key | ❌ never | `~/.config/typesafe/credentials.json` **or** `TYPESAFE_API_KEY` env var |
+| Broker API key/secret (Alpaca, LIVE) | ❌ never | `~/.config/alpaca/credentials.json` **or** `ALPACA_KEY`/`ALPACA_SECRET` env vars |
+| Retired OKX key/secret/passphrase | ❌ never | `~/.config/okx/credentials.json` **or** `OKX_API_KEY`/`OKX_SECRET`/`OKX_PASSPHRASE` env vars (retired engines only) |
+| Decision-model key (self-hosted halogen) | ❌ never | `LLM_KEY`/`LITELLM_MASTER_KEY` env **or** `~/.config/litellm/credentials.json` |
 | LLM relay key (desk commentary) | ❌ never | env var named by `TERMINAL_LLM_KEY_ENV` (default `TERMINAL_LLM_API_KEY`) |
 | Trading telemetry / sample data | ✅ public, by design | `terminal/sample_data/` — no keys, only market + decision numbers |
-| Strategy parameters | ✅ public, by design | constants at the top of `engine/okx_jev.py` |
+| Strategy parameters | ✅ public, by design | constants at the top of `engine/alpaca_stocks.py` |
 
 The engine reads credentials at runtime from external files or the environment
 and exits with a setup message if they're missing. The terminal generator
@@ -33,8 +34,8 @@ grep -rniE "api[_-]?key|secret|passphrase|BEGIN .*PRIVATE KEY|\bsk-[a-z0-9]{16,}
   --include=*.py --include=*.js --include=*.sh --include=*.html --include=*.json --include=*.md .
 ```
 
-The only intended matches are documentation placeholders (`YOUR_TYPESAFE_KEY`,
-`OKX_API_KEY`, etc.) and code that *names* a field. If you see a real value,
+The only intended matches are documentation placeholders (`YOUR_ALPACA_KEY`,
+`ALPACA_KEY`, `LLM_KEY`, etc.) and code that *names* a field. If you see a real value,
 **rotate that key immediately** and remove it from history (`git filter-repo`).
 
 ## If you fork or deploy this

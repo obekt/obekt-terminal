@@ -96,9 +96,11 @@ Each loop iteration: (1) gather live state via the target system's query API;
 Noul, urgency Score, a fit-check Noul); (3) gate answers in code
 (`pick_action`: threat override → confidence bar → mapped action); (4) execute
 the mapped mutation through the target system's rate limiter; (5) append to
-JSONL log. Reference implementation (live-money crypto scalping, manage/decide
-split with fee-wall and spread gates per venue): `engine/okx_jev.py` in this
-repo — see the `okx-trading` skill for its operational rules.
+JSONL log. Reference implementations in this repo (manage/decide split with
+fee-wall and spread gates per venue): the LIVE news-driven US-stock engine
+`engine/alpaca_stocks.py` (see the `alpaca-trading` skill), and the retired
+crypto scalper `engine/okx_jev.py` kept as historical reference (see the
+`okx-trading` skill). The typed-decision methodology below is venue-agnostic.
 
 ## 4. Pitfalls (verified)
 
