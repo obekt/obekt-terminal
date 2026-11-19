@@ -244,13 +244,52 @@ def _server_exit_sync(inst, m, meta):
     meta.pop(inst, None)
     P.save_meta(meta)
 
+def _reconcile_orphans(meta):
+    """Safety net (11-19, PIEVERSE incident): an exchange position WITHOUT meta
+    (post-fill exception before save) is invisible to the poll stop and the deck.
+    Adopt it: entry_ref=avgPx, poll-backup stop protects from the REAL entry,
+    algo_ok reflects whether the server OCO survived. Server OCO remains the
+    primary protection; this guarantees the engine never flies blind."""
+    try:
+        positions = J.api("GET", "/api/v5/account/positions?instType=FUTURES") or []
+    except Exception as e:
+        log({"event": "mom_reconcile_err", "err": str(e)[:140]})
+        return meta
+    for p in positions:
+        inst = p.get("instId", "")
+        try:
+            pos = float(p.get("pos") or 0)
+        except Exception:
+            continue
+        if pos == 0 or inst in meta:
+            continue
+        side = "long" if pos > 0 else "short"
+        entry = float(p.get("avgPx") or 0)
+        ctval = float(p.get("ctVal") or 0)
+        meta[inst] = {"opened_ts": P.now_iso(), "side": side, "contracts": abs(pos),
+                      "entry_ref": entry, "notional_usd": round(abs(pos) * ctval * entry, 2),
+                      "strategy": "mom", "mom_rank_chg_pct": None,
+                      "jev_conf": None, "jev_margin": None, "jev_noul": None,
+                      "bracket": {"cost_pct": 0.1, "tp_pct": MOM_TP_PCT, "sl_pct": MOM_SL_PCT,
+                                  "trail_arm_pct": 999.0, "trail_giveback_pct": 999.0,
+                                  "trail_floor_pct": 999.0},
+                      "hwm_pct": 0.0, "algo_ok": False, "adopted_orphan": True}
+        try:
+            meta[inst]["algo_ok"] = bool(J.pending_algos(inst))
+        except Exception:
+            pass
+        P.save_meta(meta)
+        log({"event": "mom_orphan_adopted", "inst": inst, "side": side,
+             "contracts": abs(pos), "entry_ref": entry, "algo_ok": meta[inst]["algo_ok"]})
+    return meta
+
 def manage_mom():
     """Sync server-side exits + poll-backup stop. No trail/time-stop/stale-exit:
-    the ONLY exits in the backtest are the 15% catastrophic stop, the 3% TP and
+    the ONLY exits in the backtest are the catastrophic stop, the TP and
     the 24h rebalance. The poll stop is the backup for a failed OCO attach
     (algo_ok=False) — the spot-book lesson: never assume the server-side bracket
-    is live."""
-    meta = P.load_meta()
+    is live. Orphan reconciliation first (11-19)."""
+    meta = _reconcile_orphans(P.load_meta())
     for inst, m in list(meta.items()):
         if m.get("strategy") != "mom":
             continue

@@ -534,7 +534,22 @@ def sweep_stables():
     return swept
 
 def order_detail(inst, ord_id):
-    return api("GET", f"/api/v5/trade/order?instId={inst}&ordId={ord_id}")[0]
+    try:
+        return api("GET", f"/api/v5/trade/order?instId={inst}&ordId={ord_id}")[0]
+    except Exception as e:
+        # 51603 race (PIEVERSE 11-19): filled orders move to history within
+        # seconds on fast instruments; the live endpoint then says "order does
+        # not exist". Fall back to orders-history (brief retry for archive lag)
+        # so a FILLED entry is never lost to a post-fill exception.
+        if "51603" not in str(e):
+            raise
+        it = "FUTURES" if ("XPERP" in inst or "SWAP" in inst or "FUTURES" in inst) else "SPOT"
+        for _ in range(3):
+            h = api("GET", f"/api/v5/trade/orders-history?instType={it}&instId={inst}&ordId={ord_id}")
+            if h:
+                return h[0]
+            time.sleep(1)
+        raise
 
 def pending_algos(inst=None, ordType="oco"):
     q = f"?ordType={ordType}&state=live" + (f"&instId={inst}" if inst else "")
