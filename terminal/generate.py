@@ -357,7 +357,7 @@ def _okx_capital_at(iso_ts):
 
 # ---------------------------------------------------------------------------
 # RETIRED OKX X-PERPS — FINAL RECORD (baked static summary).
-# Computed 2026-11-19 from the full OKX-era /opt/trader/engine/perp_log.jsonl
+# Computed 2026-11-19 from the full OKX-era engine log (perp_log.jsonl)
 # (13,443 events, 2026-10-15T07:22Z → 2026-11-19T17:01Z) BEFORE the venue
 # cutover, so the deck keeps the honest final numbers even though the live
 # log file now carries Alpaca telemetry. Method: every perp_close +
