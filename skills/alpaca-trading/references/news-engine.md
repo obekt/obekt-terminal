@@ -6,7 +6,10 @@ Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
 
 1. Clock: entries/exits only while `is_open` (regular hours). Outside hours:
    scan + accumulate news, defer exits to next open (log the deferral).
-2. News scan: fresh headlines (90-min window) on a ~30-name liquid universe,
+2. News scan: fresh headlines (90-min window) on a ~60-name liquid universe
+   (30 mega-caps + 30 news-heavy mid/high-beta), TWO sources: Alpaca wire +
+   Yahoo per-ticker RSS (15-min cache, >=0.7 token-overlap cross-source dedupe,
+   stable md5 ids so the seen-ledger works across cycles),
    dedupe by id, one evaluation per headline, one entry per symbol per day.
    On the closed→open transition widen the window to ~18h so overnight and
    pre-market catalysts are visible at the open.

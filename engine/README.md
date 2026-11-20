@@ -2,7 +2,7 @@
 
 **One live book, several engine files.** As of the 2026-11-19 venue change the
 live book is `alpaca_stocks.py` — a **news-driven, long-only US-equity engine on
-Alpaca** (v11.0-news). Fresh Alpaca News API headlines on a fixed 30-name liquid
+Alpaca** (v11.0-news). Fresh Alpaca News API + Yahoo RSS headlines on a 60-name liquid
 universe become candidates; a **self-hosted halogen** model returns a typed JSON
 verdict; deterministic code gates own all risk; fractional market orders enter
 long-only and the engine manages its own TP/SL + 48h time exit. The OKX era is
@@ -23,7 +23,7 @@ scheduler (cron/systemd timer) every 5 minutes — no daemon needed.
 
 | file | what it is |
 |---|---|
-| `alpaca_stocks.py` | **LIVE book — US STOCKS, news-driven (v11.0-news, long-only).** Alpaca News API headlines (≤90m, widened to 18h on the closed→open transition) on a fixed 30-name universe → deterministic pre-gates (ask-vs-last ≤2.5%, quote ≤90s, spread disaster-guard, chase ≤+7%, knife ≥−9%) → self-hosted halogen typed JSON (`action buy\|no_trade`, confidence, impact, target/stop, horizon, rationale; fails closed) → post-gates (conf ≥0.60, impact ≠ low, MAX_OPEN 2, one entry/symbol/day) → fractional market order, all-in sizing (equity×0.98/2 per leg) → engine-managed TP/SL (TP 1–5%, SL 0.8–3%, TP ≥1.5×SL) + 48h time exit + −8% daily breaker (UTC auto-clear) + STOP/STOP_PERP kill files + orphan reconciliation. Stdlib only. |
+| `alpaca_stocks.py` | **LIVE book — US STOCKS, news-driven (v11.0-news, long-only).** Alpaca News API headlines (≤90m, widened to 18h on the closed→open transition) on a 60-name universe (Alpaca wire + Yahoo per-ticker RSS, 15-min cache, cross-source dedupe) → deterministic pre-gates (ask-vs-last ≤2.5%, quote ≤90s, spread disaster-guard, chase ≤+7%, knife ≥−9%) → self-hosted halogen typed JSON (`action buy\|no_trade`, confidence, impact, target/stop, horizon, rationale; fails closed) → post-gates (conf ≥0.60, impact ≠ low, MAX_OPEN 2, one entry/symbol/day) → fractional market order, all-in sizing (equity×0.98/2 per leg) → engine-managed TP/SL (TP 1–5%, SL 0.8–3%, TP ≥1.5×SL) + 48h time exit + −8% daily breaker (UTC auto-clear) + STOP/STOP_PERP kill files + orphan reconciliation. Stdlib only. |
 | `stocks_health.py` | Compact JSON health snapshot of the live engine (timer active, log/status freshness, STOP files, equity sanity, 60m error/warn/call rates). Read-only; printed fields feed a watchdog. |
 | `verify_snapshot.py` | Daily signed equity snapshot (GET-only, isolated; never imported by the trader). Reads Alpaca account/positions + log counts, appends to the ed25519 hash chain, anchors the head to GitHub. See [`../verify/README.md`](../verify/README.md). |
 | `okx_perp.py` | **RETIRED X-Perp execution host + Jev-signal book (two-way).** Kept as history and as a library: its execution machinery and `--dry-run` paper bookkeeping are reused by the retired fade engine. |

@@ -35,7 +35,7 @@ Two pieces, both in this repo:
 
 | | What it does |
 |---|---|
-| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v11.0-news) polls the **Alpaca News API** for fresh headlines on a fixed 30-name liquid US-stock universe, asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, target/stop, horizon, rationale), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (TP/SL + 48h time exit). **Risk lives in code, never in the model:** the LLM never sizes a position or overrides a gate, and any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
+| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v11.0-news) polls the **Alpaca News API + Yahoo per-ticker RSS** for fresh headlines on a 60-name liquid US-stock universe (30 mega-caps + 30 news-heavy mid/high-beta names), asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, target/stop, horizon, rationale), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (TP/SL + 48h time exit). **Risk lives in code, never in the model:** the LLM never sizes a position or overrides a gate, and any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
 | **`terminal/`** — the observation deck | A **Bloomberg-style text UI** (pure HTML/CSS/JS, no framework) that reads the engine's raw logs and renders them: an always-visible open-position badge, the live stocks book, equity curve, selectivity funnel, decision scatter, the exact headline + price context the model saw, a candlestick replay of every trade, and a **local LLM** writing the desk commentary. Stocks-first; the retired crypto books live in one collapsed block at the bottom. **Nothing is clickable except the trade replay** — it is observation only, by design. |
 
 The thesis, in one line: **a self-hosted typed decision-model chooses, deterministic code enforces risk, a local LLM explains, and a human watches — none of them parse each other's prose.**
@@ -97,7 +97,7 @@ algorithms get replaced, not silently stopped).
    every 5 minutes, unattended (entries only in regular market hours):
    ┌─────────────────────────────────────────────────────────────┐
    │ 1. SCAN      Alpaca News API · fresh headlines ≤90m         │
-   │              on a fixed 30-name liquid US-stock universe    │
+   │              on a 60-name US-stock universe · wire + RSS    │
    │ 2. FILTER    one candidate per symbol · dedupe seen ids     │  ← deterministic code
    │              one entry per symbol per day                   │
    │ 3. PRE-GATE  ask-vs-last ≤2.5% · quote ≤90s · spread guard  │     before any LLM call

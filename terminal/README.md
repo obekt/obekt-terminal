@@ -76,7 +76,7 @@ this LLM only ever **explains** facts already in the engine state.
 - **US Stocks — the live book** — equity, realized %, win rate, last halogen call (vote + confidence bar + impact + headline + rationale), status, open positions (engine-managed TP/SL), recent closed, scanned universe.
 - **Decision gates** — the ✓/✕ checklist (news freshness, market hours, spread/ask/quote pre-gates, chase/knife, conf floor, impact, slots, bracket geometry, breaker, one-entry-per-symbol-per-day). Constants parsed from the engine source.
 - **Equity curve · Selectivity funnel · Decision scatter** (stocks axes: confidence × day-move) **· Exit-engine breakdown · P&L by hour · P&L per symbol.**
-- **Universe scan** — the fixed 30-name list + day movers from the engine's own price context.
+- **Universe scan** — the 60-name list (Alpaca wire + Yahoo RSS) + day movers from the engine's own price context.
 - **News** — the LIVE signal: fresh Alpaca News API headlines from `stocks_news.json`.
 - **Decision vote tape · Daily P&L · Architecture · Model stack · Cost optimization · Decision economics.**
 - **Trade ledger** — **click any row → full decision replay** (honest empty state until the first close).

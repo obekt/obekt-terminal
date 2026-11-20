@@ -44,7 +44,7 @@ stopped). Mechanics review day 3.
 
 Modes: cycle | status | scan   (+ --dry-run: full decision path, zero orders)
 """
-import json, os, sys, time, datetime, urllib.request, urllib.error, uuid
+import json, os, sys, time, datetime, urllib.request, urllib.error, uuid, hashlib, re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ENGINE_VERSION = "v11.0-news"
@@ -114,7 +114,15 @@ def logrec(rec):
 UNIVERSE = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
             "MU", "AVGO", "NFLX", "ORCL", "CRM", "PLTR", "COIN", "INTC",
             "QCOM", "TXN", "AMAT", "LRCX", "PANW", "CRWD", "UBER", "ABNB",
-            "SHOP", "MRVL", "SMCI", "ARM", "TSM", "SQ"]
+            "SHOP", "MRVL", "SMCI", "ARM", "TSM", "SQ",
+            # 11-20 widen (operator-default after unanswered clarify): news-heavy
+            # liquid mid/high-beta names — more catalyst surface, same gates.
+            # All verified tradable+fractionable on Alpaca 11-20 (ROKU dropped:
+            # not in the active asset list).
+            "SOFI", "HOOD", "RIVN", "LCID", "NIO", "MARA", "RIOT", "CLSK",
+            "DKNG", "SNAP", "PINS", "ETSY", "CHWY", "CVNA", "UPST", "AFRM",
+            "DASH", "NET", "DDOG", "ZS", "OKTA", "MDB", "SNOW", "MSTR",
+            "IREN", "IONQ", "RGTI", "RKLB", "ASTS", "HIMS"]
 MAX_OPEN = 2                 # slots; ~equity*0.98/2 per leg (all-in directive)
 MAX_NOTIONAL_FRAC = 0.98
 MAX_NOTIONAL_USD = 500.0     # bug guard only
@@ -248,6 +256,59 @@ def fetch_news(start_iso):
     save_json(os.path.join(HERE, "stocks_news.json"),
               [{"ts": r["created_at"], "headline": r["headline"], "symbols": r["symbols"],
                 "source": r["source"], "url": r["url"]} for r in rows[:12]])
+    return rows
+
+RSS_CACHE = os.path.join(HERE, "rss_cache.json")
+RSS_TTL_S = 900  # refresh the Yahoo feeds at most every 15m (rate-limit guard)
+
+def _title_tokens(t):
+    stop = {"the", "a", "an", "for", "to", "of", "in", "on", "at", "and",
+            "or", "its", "with", "from", "by", "is", "are", "vs", "as"}
+    return set(re.findall(r"[a-z0-9]+", t.lower())) - stop
+
+def fetch_rss(cutoff):
+    """Second news source: Yahoo per-ticker headline RSS (keyless). Tolerates
+    per-feed failure/rate-limit; same row shape as fetch_news. Stable ids
+    (md5 of sym+title) so the seen-ledger dedupes across cycles."""
+    from email.utils import parsedate_to_datetime
+    rows = []
+    for sym in UNIVERSE:
+        try:
+            req = urllib.request.Request(
+                f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={sym}",
+                headers={"User-Agent": "Mozilla/5.0 (obekt-stocks/1.0)"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                xml = r.read().decode("utf-8", "replace")
+            for it in re.findall(r"<item>(.*?)</item>", xml, re.S)[:5]:
+                tm = re.search(r"<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?</title>", it, re.S)
+                lm = re.search(r"<link>(.*?)</link>", it, re.S)
+                pm = re.search(r"<pubDate>(.*?)</pubDate>", it, re.S)
+                if not tm or not pm:
+                    continue
+                try:
+                    t = parsedate_to_datetime(pm.group(1).strip())
+                except Exception:
+                    continue
+                if t < cutoff:
+                    continue
+                title = re.sub(r"\s+", " ", tm.group(1)).strip()
+                import html as _html
+                title = _html.unescape(title)
+                rows.append({"id": "yahoo-" + hashlib.md5((sym + title).encode()).hexdigest()[:16],
+                             "headline": title, "summary": "", "source": "yahoo",
+                             "created_at": t.astimezone(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                             "symbols": [sym], "url": (lm.group(1).strip() if lm else "")})
+        except Exception:
+            continue
+        time.sleep(0.1)
+    return rows
+
+def rss_cached(cutoff):
+    c = load_json(RSS_CACHE, {})
+    if time.time() - c.get("ts", 0) < RSS_TTL_S and c.get("rows") is not None:
+        return c["rows"]
+    rows = fetch_rss(cutoff)
+    save_json(RSS_CACHE, {"ts": time.time(), "rows": rows})
     return rows
 
 def snapshots(symbols):
@@ -598,6 +659,28 @@ def scan(eq, force=False, window_min=NEWS_WINDOW_MIN):
     except Exception as e:
         logrec({"event": "news_fetch_err", "err": str(e)[:160]})
         news = []
+    cutoff = datetime.datetime.fromisoformat(start.replace("Z", "+00:00"))
+    try:
+        rss = rss_cached(cutoff)
+    except Exception as e:
+        logrec({"event": "rss_fetch_err", "err": str(e)[:160]})
+        rss = []
+    # cross-source dedupe: drop RSS items whose title overlaps an Alpaca wire
+    # item (>=0.7 token overlap) — keep the wire version (it has the summary)
+    wire_toks = [_title_tokens(n["headline"]) for n in news]
+    rss_uniq, rss_toks = [], []
+    for n in rss:
+        tk = _title_tokens(n["headline"])
+        def dup(tks):
+            for ot in tks:
+                if tk and ot and len(tk & ot) / min(len(tk), len(ot)) >= 0.7:
+                    return True
+            return False
+        if dup(wire_toks) or dup(rss_toks):
+            continue
+        rss_uniq.append(n)
+        rss_toks.append(tk)
+    news = news + rss_uniq
     fresh = [n for n in news if n["id"] not in st["seen"]]
     snaps = snapshots(UNIVERSE)
     movers = []
@@ -613,9 +696,13 @@ def scan(eq, force=False, window_min=NEWS_WINDOW_MIN):
                 continue
             if any(c["item"]["symbols"][0] == sym for c in cands):
                 continue
-            cands.append({"item": n, "sym": sym, "ctx": price_context(sym, snaps)})
+            ctx = price_context(sym, snaps)
+            if ctx["px"] <= 0:
+                continue  # no live price (halted/unlisted) — never trade blind
+            cands.append({"item": n, "sym": sym, "ctx": ctx})
     logrec({"event": "mom_scan", "n_universe": len(UNIVERSE), "n_ranked": len(cands),
             "signal": "news", "thr_pct": None, "n_fresh_headlines": len(fresh),
+            "n_rss": len(rss_uniq), "n_wire": len(news) - len(rss_uniq),
             "legs": [(c["sym"], c["ctx"]["day_chg_pct"], "long") for c in cands[:MAX_OPEN]],
             "longs": [(c["sym"], c["ctx"]["day_chg_pct"]) for c in cands[:MAX_OPEN]],
             "shorts": [],
