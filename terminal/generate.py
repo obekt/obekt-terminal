@@ -106,13 +106,13 @@ def _live_params():
     transcribe. Defaults below mirror the stocks engine's declared constants
     and are used ONLY if the source file is unreadable."""
     fname = LIVE_ENGINE
-    defaults = {"CONF_FLOOR": 0.60, "MAX_OPEN": 2, "MAX_NOTIONAL_FRAC": 0.98,
-                "MAX_NOTIONAL_USD": 500.0, "MAX_SPREAD_PCT": 1.00,
-                "ASK_VS_LAST_PCT": 0.35, "QUOTE_STALE_S": 90,
+    defaults = {"CONF_FLOOR": 0.55, "MAX_OPEN": 3, "MAX_NOTIONAL_FRAC": 0.98,
+                "MAX_NOTIONAL_USD": 500.0, "MAX_SPREAD_PCT": 10.0,
+                "ASK_VS_LAST_PCT": 2.5, "QUOTE_STALE_S": 90,
                 "CHASE_CAP_PCT": 7.0, "KNIFE_FLOOR_PCT": -9.0,
-                "TP_MIN": 1.0, "TP_MAX": 5.0, "SL_MIN": 0.8, "SL_MAX": 3.0,
-                "TP_SL_RATIO": 1.5, "MAX_HOLD_H": 48.0, "DAILY_LOSS_PCT": 8.0,
-                "NEWS_WINDOW_MIN": 90, "MAX_LLM_CALLS": 4,
+                "TP_MIN": 0.8, "TP_MAX": 2.5, "SL_MIN": 0.5, "SL_MAX": 1.5,
+                "TP_SL_RATIO": 1.5, "MAX_HOLD_H": 6.0, "DAILY_LOSS_PCT": 8.0,
+                "NEWS_WINDOW_MIN": 90, "MAX_LLM_CALLS": 8, "COOLDOWN_MIN": 45,
                 "SELL_REG_FEE_RATE": 0.00003, "HEARTBEAT_S": 1800}
     try:
         src = open(os.path.join(BASE, fname)).read(65536)
@@ -135,6 +135,11 @@ def _live_params():
         m = re.search(r'^%s,\s*%s\s*=\s*([0-9.]+),\s*([0-9.]+)' % (a, b), src, re.M)
         if m:
             out[a], out[b] = float(m.group(1)), float(m.group(2))
+    # intraday clock tuples (ENTRY_CUTOFF_ET / FLAT_TIME_ET) -> "HH:MM"
+    for name in ("ENTRY_CUTOFF_ET", "FLAT_TIME_ET"):
+        m = re.search(r'^%s\s*=\s*\((\d+),\s*(\d+)\)' % name, src, re.M)
+        if m:
+            out[name] = "%02d:%02d" % (int(m.group(1)), int(m.group(2)))
     out["source"] = fname
     # Prompt-budget machinery: the stocks prompt is ONE headline + summary +
     # price context, so there is no trim loop. Report presence explicitly.
@@ -187,15 +192,19 @@ def _engine_bars(fname="okx_jev.py"):
 
 
 def _live_risk():
-    """Risk-state summary for the LIVE (stocks) book. The Alpaca engine has no
-    win/loss cooldowns — its re-entry lockout is ONE ENTRY PER SYMBOL PER DAY
-    (news_state.json 'acted'), plus the 48h time exit and the -8% daily breaker.
+    """Risk-state summary for the LIVE (stocks) book. v12 intraday: per-symbol
+    re-entry COOLDOWN after an exit (news_state.json 'exits'), <=6h time exit,
+    no entries after 15:30 ET, flat everything 15:50 ET, -8% daily breaker.
     Windows/limits parsed from the engine source, never hardcoded."""
     p = _live_params()
-    acted = (_load_json(os.path.join(BASE, "news_state.json"), {}) or {}).get("acted") or {}
+    exits = (_load_json(os.path.join(BASE, "news_state.json"), {}) or {}).get("exits") or {}
+    cd_s = float(p.get("COOLDOWN_MIN") or 45) * 60
+    locked = {k: v for k, v in exits.items() if time.time() - float(v) < cd_s}
     return {"loss_min": None, "win_min": None, "exits": {},
-            "one_entry_per_symbol_per_day": True,
-            "acted_today": sorted(acted.keys()),
+            "cooldown_min": p.get("COOLDOWN_MIN"),
+            "reentry_locked": sorted(locked.keys()),
+            "entry_cutoff_et": p.get("ENTRY_CUTOFF_ET"),
+            "flat_by_close_et": p.get("FLAT_TIME_ET"),
             "max_hold_h": p.get("MAX_HOLD_H"),
             "daily_loss_pct": p.get("DAILY_LOSS_PCT")}
 
@@ -357,7 +366,7 @@ def _okx_capital_at(iso_ts):
 
 # ---------------------------------------------------------------------------
 # RETIRED OKX X-PERPS — FINAL RECORD (baked static summary).
-# Computed 2026-11-19 from the full OKX-era engine log (perp_log.jsonl)
+# Computed 2026-11-19 from the full OKX-era /opt/trader/engine/perp_log.jsonl
 # (13,443 events, 2026-10-15T07:22Z → 2026-11-19T17:01Z) BEFORE the venue
 # cutover, so the deck keeps the honest final numbers even though the live
 # log file now carries Alpaca telemetry. Method: every perp_close +

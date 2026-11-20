@@ -1,5 +1,26 @@
 #!/usr/bin/env python3
-"""alpaca_stocks.py — v11.0-news: NEWS-DRIVEN US EQUITY engine on Alpaca.
+"""alpaca_stocks.py — v12.0-intraday: INTRADAY NEWS-MOMENTUM US EQUITY engine on Alpaca.
+
+v12.0 (2026-11-20, OPERATOR DIRECTIVE: "we want more trades. multiple trades a
+day. we are not aiming long term stocks with that pocket money"): recalibrated
+from the v11 catalyst-only book for intraday turnover —
+  - prompt admits substantive MEDIUM-quality catalysts (analyst actions with a
+    thesis, product news, stakeholder moves, sector read-throughs), still
+    rejects listicles/rehash/misattribution/negative catalysts;
+  - CONF_FLOOR 0.60->0.55, MAX_LLM_CALLS 4->8, MAX_OPEN 2->3;
+  - intraday geometry: TP 0.8-2.5%, SL 0.5-1.5%, hold <=6h (was 48h);
+  - re-entry COOLDOWN 45m per symbol replaces the one-entry-per-day lockout;
+  - deterministic clock: no entries after 15:30 ET, FLAT EVERYTHING 15:50 ET —
+    overnight gap risk is designed out, the book is flat every night;
+  - costs: commission-free, round trip ~spread+0.003% regulatory — the fee wall
+    that killed the OKX scalp does not exist here; the risk is adverse selection
+    on noise entries, which the prompt+gates still filter.
+HONEST EV: intraday news momentum is a known pattern but unproven HERE; higher
+turnover = faster learning + higher variance. KILL-GATE v12 (pre-registered
+11-20): 30 closed trades OR 7 days (~11-27), whichever FIRST, live realized
+net <= 0 -> replace (operator standing rule). Mechanics review day 2.
+
+v11.0-news (2026-11-19): NEWS-DRIVEN US EQUITY engine on Alpaca.
 
 VENUE CHANGE (2026-11-19, operator directive): the whole platform moved from
 OKX EEA crypto X-Perps to Alpaca US STOCKS. "we will trade real stocks. and
@@ -35,19 +56,16 @@ REAL and accepted at experimental scale — exits cannot execute while the
 market is closed. 5-min poll granularity on TP/SL: slippage beyond the stop
 is possible on fast moves; position size (~$60/leg) bounds it.
 
-HONEST EV: no demonstrated edge yet. The OKX fade edge was venue-specific
-and does NOT transfer. This is a fresh hypothesis (fresh high-impact news +
-contained price context -> short-horizon drift), pre-registered kill-gate:
-30 closed trades OR 14 days, whichever FIRST, live realized net <= 0 ->
-replace (operator standing rule: failed algorithms get replaced, not
-stopped). Mechanics review day 3.
+(v11 historical: launched with no demonstrated edge, kill-gate 30 closes OR
+14 days; superseded by v12 above at operator directive.)
 
 Modes: cycle | status | scan   (+ --dry-run: full decision path, zero orders)
 """
 import json, os, sys, time, datetime, urllib.request, urllib.error, uuid, hashlib, re
+from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE_VERSION = "v11.0-news"
+ENGINE_VERSION = "v12.0-intraday"
 DRY = "--dry-run" in sys.argv
 
 LOG = os.path.join(HERE, "perp_log.jsonl")
@@ -123,12 +141,12 @@ UNIVERSE = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "AMD",
             "DKNG", "SNAP", "PINS", "ETSY", "CHWY", "CVNA", "UPST", "AFRM",
             "DASH", "NET", "DDOG", "ZS", "OKTA", "MDB", "SNOW", "MSTR",
             "IREN", "IONQ", "RGTI", "RKLB", "ASTS", "HIMS"]
-MAX_OPEN = 2                 # slots; ~equity*0.98/2 per leg (all-in directive)
+MAX_OPEN = 3                 # v12 intraday: 3 slots (~equity*0.98/3 per leg)
 MAX_NOTIONAL_FRAC = 0.98
 MAX_NOTIONAL_USD = 500.0     # bug guard only
-CONF_FLOOR = 0.60            # burn-in bar; recalibrate after ~30 calls
+CONF_FLOOR = 0.55            # v12: medium-quality catalysts admitted; recalibrate after ~30 calls
 NEWS_WINDOW_MIN = 90         # headline freshness window
-MAX_LLM_CALLS = 4            # per cycle cap (halogen is $0 but keep it sane)
+MAX_LLM_CALLS = 8            # v12: evaluate more of the candidate set (halogen is $0)
 MAX_SPREAD_PCT = 10.0        # disaster guard only — IEX BBO spread is NOT the
                              # NBBO (routinely 2-4% on liquid names); Alpaca
                              # routes to the inside market, so this never binds
@@ -137,10 +155,13 @@ ASK_VS_LAST_PCT = 2.5        # ghost-quote guard: IEX ask >2.5% off the last
 QUOTE_STALE_S = 90
 CHASE_CAP_PCT = 7.0          # don't buy a name already +7% on the day
 KNIFE_FLOOR_PCT = -9.0       # don't catch a -9% day even on "good" news
-TP_MIN, TP_MAX = 1.0, 5.0
-SL_MIN, SL_MAX = 0.8, 3.0
+TP_MIN, TP_MAX = 0.8, 2.5    # v12 intraday geometry (1-6h drift, not 48h)
+SL_MIN, SL_MAX = 0.5, 1.5
 TP_SL_RATIO = 1.5            # enforce TP >= 1.5 x SL
-MAX_HOLD_H = 48.0            # news drift decays; time exit
+MAX_HOLD_H = 6.0             # v12: intraday hold; time exit
+COOLDOWN_MIN = 45            # v12: re-entry lockout per symbol after an exit
+ENTRY_CUTOFF_ET = (15, 30)   # no new entries after 15:30 ET (let them play out)
+FLAT_TIME_ET = (15, 50)      # deterministic flat-by-close: exit everything 15:50 ET
 DAILY_LOSS_PCT = 8.0         # software backstop breaker (auto-clears UTC roll)
 SELL_REG_FEE_RATE = 0.00003  # SEC+TAF estimate on sells (commission-free venue)
 HEARTBEAT_S = 1800
@@ -215,6 +236,7 @@ def load_news_state():
     st["seen"] = {k: v for k, v in st.get("seen", {}).items() if v > cutoff}
     today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
     st["acted"] = {k: v for k, v in st.get("acted", {}).items() if v == today}
+    st["exits"] = {k: v for k, v in st.get("exits", {}).items() if time.time() - v < 86400}
     return st
 
 def fetch_news(start_iso):
@@ -361,17 +383,21 @@ def price_context(sym, snap):
 
 # ---------------- halogen decision ----------------
 SYS_PROMPT = (
-    "You are the entry decision model for a small LIVE US-equity news book "
-    "(~$120, long-only, fractional shares, commission-free, regular hours only). "
+    "You are the entry decision model for a small LIVE INTRADAY US-equity news book "
+    "(~$120, long-only, fractional shares, commission-free, FLAT BY THE CLOSE). "
     "You receive ONE fresh news headline about a stock plus its price context. "
-    "Decide whether the news is a tradable catalyst for a 1-48h LONG drift. "
-    "Rules: routine/irrelevant news (software updates, awards, listicles, rehashed "
-    "analyst notes, macro without company impact) -> no_trade. Strong genuine "
-    "catalysts (earnings beats/misses with guidance, FDA decisions, major contracts, "
-    "M&A, guidance raises, product launches with revenue impact, regulatory wins) "
-    "may justify buy. Beware: good news on a stock already up big today is often "
-    "priced in (chase risk); bad news is NOT tradable here (long-only). "
-    "target_pct/stop_pct are 1-48h price-move expectations, not certainties. "
+    "Decide whether the news is likely to produce a tradable 1-6 hour LONG drift TODAY. "
+    "This is an intraday news-momentum desk, not an investment committee: substantive "
+    "company-specific news with a plausible same-day price reaction IS tradable — "
+    "earnings/guidance surprises, FDA/clinical outcomes, M&A and major contracts, "
+    "product launches with a revenue angle, substantive analyst upgrades/downgrades or "
+    "price-target changes WITH a thesis, major stakeholder moves, index inclusion, "
+    "squeeze/flow signals, and sector news with a clear positive company read-through. "
+    "REJECT: listicles and comparisons, rehashed roundups with no new information, "
+    "news actually about a DIFFERENT company, macro stories with no company angle, "
+    "stale reprints, and negative catalysts (long-only — bad news is not tradable here). "
+    "Good news on a stock already up big today may be priced in (chase risk) — weigh it. "
+    "target_pct/stop_pct are 1-6h expectations: target 0.8-2.5, stop 0.5-1.5. "
     "Reply STRICT JSON only: {\"action\":\"buy\"|\"no_trade\",\"confidence\":0.0-1.0,"
     "\"impact\":\"high\"|\"medium\"|\"low\",\"target_pct\":number,\"stop_pct\":number,"
     "\"horizon_hours\":number,\"rationale\":\"<=200 chars\"}. "
@@ -569,6 +595,9 @@ def close_one(sym, m, reason):
     meta = load_meta()
     meta.pop(sym, None)
     save_meta(meta)
+    nst = load_json(NEWS_STATE, {})
+    nst.setdefault("exits", {})[sym] = time.time()
+    save_json(NEWS_STATE, nst)
 
 def reconcile(meta):
     """Adopt exchange positions without meta; detect vanished ones. Same
@@ -590,7 +619,7 @@ def reconcile(meta):
             meta[sym] = {"opened_ts": now_iso(), "side": "long", "contracts": qty,
                          "entry_ref": entry, "notional_usd": round(qty * entry, 2),
                          "strategy": "news", "bracket": {"cost_pct": 0.01,
-                         "tp_pct": 2.5, "sl_pct": 1.5, "trail_arm_pct": 999.0,
+                         "tp_pct": 1.5, "sl_pct": 1.0, "trail_arm_pct": 999.0,
                          "trail_giveback_pct": 999.0, "trail_floor_pct": 999.0},
                          "hwm_pct": 0.0, "algo_ok": False, "adopted_orphan": True,
                          "max_hold_h": MAX_HOLD_H}
@@ -690,10 +719,13 @@ def scan(eq, force=False, window_min=NEWS_WINDOW_MIN):
             movers.append((sym, ctx["day_chg_pct"]))
     movers.sort(key=lambda r: -r[1])
     cands = []
+    now_ts = time.time()
+    exits = st.get("exits", {})
     for n in fresh:
         for sym in n["symbols"]:
-            if sym in st["acted"]:
-                continue
+            last_exit = exits.get(sym)
+            if last_exit and now_ts - last_exit < COOLDOWN_MIN * 60:
+                continue  # v12 re-entry cooldown (replaces the daily lockout)
             if any(c["item"]["symbols"][0] == sym for c in cands):
                 continue
             ctx = price_context(sym, snaps)
@@ -737,6 +769,16 @@ def cycle():
     except Exception as e:
         logrec({"event": "clock_err", "err": str(e)[:120]})
         is_open = False
+    now_et = datetime.datetime.now(datetime.timezone.utc).astimezone(ZoneInfo("America/New_York"))
+    et_hm = (now_et.hour, now_et.minute)
+    # v12 deterministic intraday clock: flat everything 10 min before the close,
+    # no new entries in the last 30 min. Overnight gap risk is designed OUT.
+    if is_open and et_hm >= FLAT_TIME_ET and meta:
+        for sym, m in list(meta.items()):
+            close_one(sym, m, "flat-by-close (15:50 ET rule)")
+        meta = load_meta()
+        logrec({"event": "flat_by_close", "n_closed": len(out.get("closed", [])) or "all", "et": now_et.strftime("%H:%M")})
+    entries_allowed = is_open and et_hm < ENTRY_CUTOFF_ET
     # On the closed->open transition widen the window to 18h so overnight /
     # pre-market catalysts are visible at the open (the 90m window alone would
     # drop everything published before ~08:00 ET).
@@ -750,6 +792,9 @@ def cycle():
     if not is_open:
         out["skipped"].append("market closed — news accumulated, entries at next open")
         logrec({"event": "perp_no_trade", "why": "market closed"})
+    elif not entries_allowed:
+        out["skipped"].append("entry cutoff 15:30 ET passed — flat-by-close regime")
+        logrec({"event": "perp_no_trade", "why": "entry cutoff 15:30 ET passed"})
     elif len(meta) >= MAX_OPEN:
         out["skipped"].append(f"MAX_OPEN {MAX_OPEN} reached")
         logrec({"event": "perp_no_trade", "why": f"MAX_OPEN {MAX_OPEN} reached"})
@@ -812,7 +857,6 @@ def cycle():
                 logrec({"event": "perp_gate_reject", "inst": sym, "why": "; ".join(gate_fails)})
                 continue
             if open_one(sym, item, ctx, ans, eq):
-                st["acted"][sym] = today
                 out["opened"].append(("long", sym))
         save_json(NEWS_STATE, st)
     # persist market-state transition flag + seen/acted ids every cycle

@@ -386,7 +386,7 @@
         out.push(gateRow("FINAL ENGINE VERDICT", c.fire,
           c.fire ? "TRADE AUTHORIZED" : (na ? "MODEL: NO-TRADE" : "BELOW BAR — STAND ASIDE"), na));
       }
-      out.push(gateRow("MAX OPEN " + fmt(P.MAX_OPEN, 0) + " SLOTS · ONE ENTRY/SYMBOL/DAY", true,
+      out.push(gateRow("MAX OPEN " + fmt(P.MAX_OPEN, 0) + " SLOTS · RE-ENTRY COOLDOWN " + fmt(P.COOLDOWN_MIN, 0) + "M", true,
         "all-in fractional sizing ~equity×" + fmt(P.MAX_NOTIONAL_FRAC, 2) + "/" + fmt(P.MAX_OPEN, 0) + " per leg", false));
       out.push(gateRow("TP ≥" + fmt(P.TP_SL_RATIO, 1) + "× SL · TP " + fmt(P.TP_MIN, 1) + "–" + fmt(P.TP_MAX, 1) + "% · SL " + fmt(P.SL_MIN, 1) + "–" + fmt(P.SL_MAX, 1) + "%", true,
         "bracket geometry clamped in code, not by the model", false));
@@ -432,9 +432,11 @@
       (r.breaked || (D.perp || {}).breaked) ? "TRIPPED — HALTED" : "clear"));
     if (isNews) {
       const lr = D.live_risk || {};
-      const acted = lr.acted_today || [];
-      out.push(gateRow("RE-ENTRY LOCKOUT — ONE ENTRY PER SYMBOL PER DAY", true,
-        acted.length ? "ALREADY ENTERED TODAY: " + acted.join(", ") : "no symbol used its daily entry yet"));
+      const locked = lr.reentry_locked || [];
+      out.push(gateRow("RE-ENTRY COOLDOWN " + fmt(lr.cooldown_min || P.COOLDOWN_MIN, 0) + "M PER SYMBOL", true,
+        locked.length ? "LOCKED: " + locked.join(", ") : "no symbol in cooldown"));
+      out.push(gateRow("INTRADAY CLOCK — NO ENTRIES AFTER " + (lr.entry_cutoff_et || "15:30") + " ET · FLAT ALL " + (lr.flat_by_close_et || "15:50") + " ET", true,
+        "no overnight holds — gap risk designed out", false));
     } else {
       // ACTIVE cooldowns only (exits maps are historical). Windows come from the
       // engine's source via live_risk, falling back to the retired spot windows.
@@ -1796,7 +1798,7 @@
       '<div class="dim" style="font-size:10px">' + esc(hhmm(r.ts)) + " — same pair rejected minutes earlier: " + esc((r.fails || []).join("; ")) + " (setup had not matured yet)</div>").join("");
     const sec4 = '<div class="msec"><h3>4 · PRE-ENTRY GAUNTLET — WHAT THIS ' + (isStocks ? 'SYMBOL' : 'PAIR') + ' SURVIVED BEFORE THE MODEL WAS ASKED</h3>' +
       '<div class="dim" style="font-size:10.5px">' + (isStocks
-        ? "SPREAD ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · ASK-vs-LAST ≤" + fmt(P.ASK_VS_LAST_PCT, 2) + "% · QUOTE ≤" + fmt(P.QUOTE_STALE_S, 0) + "S · CHASE ≤+" + fmt(P.CHASE_CAP_PCT, 1) + "% DAY · KNIFE ≥" + fmt(P.KNIFE_FLOOR_PCT, 1) + "% · ONE ENTRY/SYMBOL/DAY · THEN POST-MODEL: CONF ≥" + fmt(P.CONF_FLOOR, 2) + " AND IMPACT ≠ LOW · MAX " + fmt(P.MAX_OPEN, 0) + " SLOTS."
+        ? "SPREAD ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · ASK-vs-LAST ≤" + fmt(P.ASK_VS_LAST_PCT, 2) + "% · QUOTE ≤" + fmt(P.QUOTE_STALE_S, 0) + "S · CHASE ≤+" + fmt(P.CHASE_CAP_PCT, 1) + "% DAY · KNIFE ≥" + fmt(P.KNIFE_FLOOR_PCT, 1) + "% · RE-ENTRY COOLDOWN " + fmt(P.COOLDOWN_MIN, 0) + "M · THEN POST-MODEL: CONF ≥" + fmt(P.CONF_FLOOR, 2) + " AND IMPACT ≠ LOW · MAX " + fmt(P.MAX_OPEN, 0) + " SLOTS."
         : ccy === "USD"
         ? "LIQUIDITY FLOOR ≥" + sym + Math.round((P.MIN_VOL24H_USD || 300000) / 1000) + "K · SPREAD CAP ≤" + fmt(P.MAX_SPREAD_PCT, 2) + "% · RANGE FLOOR ≥" + fmt(P.MIN_DAY_RANGE_PCT, 1) + "% · TOP-5 BOOK DEPTH ≥" + sym + Math.round(P.MIN_TOP5_DEPTH_USD || 1000) + " · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× NOTIONAL AT ENTRY MOMENT."
         : "LIQUIDITY FLOOR · SPREAD CAP · RANGE FLOOR · TOP-5 BOOK DEPTH ≥€1.5K · MOMENTUM GATES (30M TREND, GREEN BARS, RANGE POSITION, NET TAKER BUYING, TP-REACHABLE VOL) · COOLDOWN CHECK · LIVE-BOOK RE-CHECK ≥3× STAKE AT ENTRY MOMENT.") + "</div>" +
