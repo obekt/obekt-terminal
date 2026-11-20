@@ -157,6 +157,17 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 pass  # fall through to normal static handling
         return super().do_GET()
 
+    def do_HEAD(self):
+        # mirror the favicon special case for HEAD (browsers/probes use it)
+        if self.path.split("?")[0] == "/favicon.ico":
+            data = FAVICON_SVG.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/svg+xml")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            return
+        return super().do_HEAD()
+
     _wl_last = {}
 
     def do_POST(self):

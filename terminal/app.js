@@ -227,7 +227,7 @@
       // including the retired books' losses — so the deck never implies a flat
       // all-time record. Numbers verified from chain.jsonl (seq 5 peak 2026-11-14,
       // latest 2026-11-20); retired losses from the frozen OKX/SPOT ledgers.
-      '<div class="hero-lifetime">LIFETIME ACCOUNT (SIGNED CHAIN): $146.80 peak 11-14 → $123.53 now (−15.9%) · this stocks book was funded 11-19 from the retired OKX book · retired losses: OKX −$26.68, SPOT −€21.03 (RETIRED BOOKS section below) · full signed history → <a href="/verify">/verify</a></div>';
+      '<div class="hero-lifetime">LIFETIME ACCOUNT (SIGNED CHAIN): $' + fmt((D.lifetime || {}).peak || 146.80) + ' peak ' + esc((D.lifetime || {}).peak_date || "11-14") + ' → $' + fmt((D.lifetime || {}).now || 123.53) + ' now (' + (((D.lifetime || {}).drawdown_pct) ?? -15.9) + '%) · this stocks book was funded 11-19 from the retired OKX book · retired losses: OKX −$26.68, SPOT −€21.03 (RETIRED BOOKS section below) · full signed history → <a href="/verify">/verify</a></div>';
   }
 
   /* ---------- desk note ---------- */

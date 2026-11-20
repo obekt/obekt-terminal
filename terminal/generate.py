@@ -305,9 +305,11 @@ LAUNCH_EUR = 147.77
 # ---------------------------------------------------------------------------
 
 # LIVE book: Alpaca US stocks. The OKX account value was moved to Alpaca at the
-# 2026-11-19 venue cutover (operator directive). Single capital event: the USD
-# actually funded into Alpaca at cutover. Realized return % is anchored to this
-# money-put-in base, never to a moving equity value.
+# 2026-11-19 venue cutover (operator directive).
+# TODO-CUTOVER: parent fills real ts + USD amount — replace the placeholder
+# tuple below with ("2026-11-19T..:..:..+00:00", <USD actually funded into
+# Alpaca>) at cutover. Until then the live book's capital base is 0 and its
+# all-time return % renders as None (honest: base not yet confirmed).
 STOCKS_CAPITAL_EVENTS = (
     ("2026-11-19T18:47:32+00:00", 123.53),
 )
@@ -355,7 +357,7 @@ def _okx_capital_at(iso_ts):
 
 # ---------------------------------------------------------------------------
 # RETIRED OKX X-PERPS — FINAL RECORD (baked static summary).
-# Computed 2026-11-19 from the full OKX-era engine perp_log.jsonl
+# Computed 2026-11-19 from the full OKX-era /opt/trader/engine/perp_log.jsonl
 # (13,443 events, 2026-10-15T07:22Z → 2026-11-19T17:01Z) BEFORE the venue
 # cutover, so the deck keeps the honest final numbers even though the live
 # log file now carries Alpaca telemetry. Method: every perp_close +
@@ -670,6 +672,42 @@ def normalize_perp_events(pevents):
         elif ev == "stocks_orphan_adopted":
             out.append(dict(e, event="orphan_adopted", ccy="USD"))
     return out
+
+
+def _lifetime_from_chain():
+    """Lifetime account equity from the SIGNED chain — single source of truth,
+    never hardcode numbers that drift. Peak + latest across both venue eras
+    (okx_equity_usdc pre-cutover, alpaca_equity_usd after)."""
+    try:
+        rows = []
+        with open(os.path.join(STATE_DIR, "chain.jsonl"), errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                p = e.get("payload") or {}
+                eq = p.get("okx_equity_usdc")
+                if eq is None:
+                    eq = p.get("alpaca_equity_usd")
+                if eq is None:
+                    continue
+                try:
+                    rows.append((e.get("ts", "")[:10], float(eq)))
+                except Exception:
+                    continue
+        if not rows:
+            return None
+        peak_ts, peak = max(rows, key=lambda r: r[1])
+        now_ts, now = rows[-1]
+        return {"peak": round(peak, 2), "peak_date": peak_ts[5:],
+                "now": round(now, 2), "now_date": now_ts[5:],
+                "drawdown_pct": round((now / peak - 1) * 100, 1) if peak else 0.0}
+    except Exception:
+        return None
 
 
 def build_round_trips(events, ccy="EUR", capital_base=None):
@@ -2090,7 +2128,7 @@ def build_perp(shared_trips=None):
         base = _stocks_capital_at(t.get("close_ts"))
         cum.append(round(100 * run / base, 3) if base else 0.0)
     # all-time realized % uses the CURRENT capital base (money in the book now).
-    # If the capital base is 0 (book not yet funded) this is None — honest.
+    # With the cutover placeholder still unfilled (base 0) this is None — honest.
     net_all_usd_val = sum((t.get("net_usd") or 0) for t in trips)
     net_all_pct = round(100 * net_all_usd_val / STOCKS_CAPITAL_USD, 2) if STOCKS_CAPITAL_USD else None
 
@@ -2454,6 +2492,8 @@ def build():
             events[-1].get("ts") if events else None),
         "live_ccy": live_ccy,
         "live_book": "STOCKS" if live_ccy == "USD" else "SPOT",
+        # Lifetime account story parsed from the signed chain (drift-proof).
+        "lifetime": _lifetime_from_chain(),
         # Live engine constants parsed from source for the ARCHITECTURE panel.
         "params": _live_params(),
         "build_ms": int((time.time() - t0) * 1000),
