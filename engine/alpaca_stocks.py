@@ -210,32 +210,30 @@ def load_news_state():
     return st
 
 def fetch_news(start_iso):
-    """Latest headlines, client-side filtered to the window. The API's `start`
-    param proved unreliable (returned 0 rows for valid windows while fresh
-    items existed), so paginate newest-first and filter by created_at here.
-    Stop when items predate the cutoff or after 12 pages (600 items)."""
+    """Headlines within the window. Server-side `start` filter (verified
+    working 11-20; a transient 0-row failure on 11-19 caused the empty-news
+    incident) PLUS a client-side created_at re-filter as belt-and-braces.
+    The wire's sort order is by updated_at, NOT created_at — never early-stop
+    on the first old item; paginate to the token end or the page cap."""
     cutoff = datetime.datetime.fromisoformat(start_iso.replace("Z", "+00:00"))
     out, token = [], None
-    for _ in range(12):
-        path = "/v1beta1/news?limit=50&sort=desc"
+    for _ in range(20):
+        path = f"/v1beta1/news?limit=50&sort=desc&start={start_iso}"
         if token:
             path += f"&page_token={token}"
         d = api("GET", path, base=DATA)
         items = d.get("news") or []
         if not items:
             break
-        stop = False
         for n in items:
             try:
                 t = datetime.datetime.fromisoformat((n.get("created_at") or "").replace("Z", "+00:00"))
             except Exception:
                 continue
-            if t < cutoff:
-                stop = True
-                break
-            out.append(n)
+            if t >= cutoff:
+                out.append(n)
         token = d.get("next_page_token")
-        if stop or not token:
+        if not token:
             break
     uni = set(UNIVERSE)
     rows = []
