@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
+<h1 class="sr-only">Obekt Terminal — live autonomous US-stock news trading on Alpaca</h1>
 <div id="crt"></div>
 <div id="boot"><pre id="boot-text"></pre></div>
 
@@ -72,7 +73,7 @@
   </section>
 
   <section class="panel" id="p-exits">
-    <h2>EXIT ENGINE BREAKDOWN</h2>
+    <h2>EXIT RULES — HOW POSITIONS CLOSE</h2>
     <div class="body" id="exits-body">—</div>
   </section>
 
@@ -86,7 +87,7 @@
   </section>
 
   <section class="panel wide" id="p-universe">
-    <h2>UNIVERSE SCAN — LIVE STOCKS <em>the engine scans a fixed 30-name US-stock universe for fresh news every cycle · day movers from its own price context</em></h2>
+    <h2>UNIVERSE SCAN — LIVE STOCKS <em>the engine scans a 60-name US-stock universe (Alpaca wire + Yahoo RSS) for fresh news every cycle · day movers from its own price context</em></h2>
     <div class="body" id="universe-body">—</div>
   </section>
 
@@ -211,7 +212,7 @@
      title="Open-source: the engine, this terminal, and the agent skills">⌥ SOURCE · github.com/obekt/obekt-terminal</a>
   <div id="gen">—</div>
 </footer>
-<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL IN US STOCKS ON ALPACA (LONG-ONLY, NEWS-DRIVEN), SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER, THE /VERIFY PAGE, THE WAITLIST FORM AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: YAHOO FINANCE PUBLIC FEED · DECISIONS: SELF-HOSTED HALOGEN-QWEN3.8-FLASH-NEXT (TYPED JSON NEWS CALLS, SCHEMA-CHECKED, FAILS CLOSED) · DESK COPY: SAME MODEL, OBSERVER ONLY · TRACK RECORD: DAILY SIGNED SNAPSHOTS, CHAIN ANCHORED ON GITHUB → /VERIFY<span class="cursor">█</span></div>
+<div id="disclaimer">READ-ONLY OBSERVATION DECK · A LIVE AUTONOMOUS SYSTEM TRADING REAL CAPITAL IN US STOCKS ON ALPACA (LONG-ONLY, NEWS-DRIVEN), SHOWN EXACTLY AS BUILT · OPEN SOURCE — NOTHING HERE PLACES ORDERS; THE ONLY INTERACTIONS ARE THE LEDGER REPLAY VIEWER, THE /VERIFY PAGE, THE WAITLIST FORM AND THE SOURCE LINK · PAST PERFORMANCE ≠ FUTURE RESULTS · NOT FINANCIAL ADVICE · PRICES: ALPACA (ENGINE) + YAHOO FINANCE (INDEX TICKERS) · DECISIONS: SELF-HOSTED HALOGEN-QWEN3.8-FLASH-NEXT (TYPED JSON NEWS CALLS, SCHEMA-CHECKED, FAILS CLOSED) · DESK COPY: SAME MODEL, OBSERVER ONLY · TRACK RECORD: DAILY SIGNED SNAPSHOTS, CHAIN ANCHORED ON GITHUB → /VERIFY<span class="cursor">█</span></div>
 
 <div id="modal-root"></div>
 

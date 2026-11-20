@@ -13,9 +13,18 @@
   --mono:"IBM Plex Mono","JetBrains Mono","SF Mono",Menlo,Consolas,"Courier New",monospace;
 }
 *{margin:0;padding:0;box-sizing:border-box;user-select:none;-webkit-user-select:none;cursor:default}
-html,body{background:var(--bg);color:var(--white);font-family:var(--mono);font-size:12px;line-height:1.45}
+html,body{background:var(--bg);color:var(--white);font-family:var(--mono);font-size:13px;line-height:1.45}
 a{color:inherit;text-decoration:none;pointer-events:none}
 button,input,select{display:none!important}
+/* Scoped unlocks — the deck stays read-only, but the two conversion funnels
+   (signed-ledger CTA, waitlist form) and the ledger replay must stay usable. */
+a.proof-link,#gh-link{pointer-events:auto;cursor:pointer}
+#wl-email,#wl-form button{display:inline-block!important;pointer-events:auto;user-select:text;-webkit-user-select:text}
+#wl-email{cursor:text}
+#wl-form button{cursor:pointer}
+.trade-row{cursor:pointer}
+/* screen-reader-only heading (the visual deck is all h2 panel titles) */
+.sr-only{position:absolute;clip-path:inset(50%);width:1px;height:1px;overflow:hidden;white-space:nowrap}
 
 #crt{position:fixed;inset:0;pointer-events:none;z-index:999;
   background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
@@ -39,6 +48,7 @@ button,input,select{display:none!important}
 
 #marquee-wrap{overflow:hidden;background:#080808;border-bottom:1px solid var(--border);white-space:nowrap;padding:3px 0}
 #marquee{display:inline-block;animation:scroll 60s linear infinite;color:var(--white);font-size:11.5px;letter-spacing:.5px}
+#marquee-wrap:hover #marquee{animation-play-state:paused}
 #marquee b{color:var(--amber);font-weight:400}
 @keyframes scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
 .up{color:var(--green)!important}
@@ -68,7 +78,7 @@ pre{font-family:inherit;white-space:pre-wrap;word-break:break-word}
 
 /* tables */
 table{border-collapse:collapse;width:100%;font-size:11px}
-th{color:var(--gray);font-weight:400;font-size:9.5px;letter-spacing:1px;text-align:right;
+th{color:var(--gray);font-weight:400;font-size:10.5px;letter-spacing:1px;text-align:right;
   border-bottom:1px solid var(--border);padding:2px 4px;white-space:nowrap}
 td{padding:2px 4px;text-align:right;border-bottom:1px dotted #191508;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 th:first-child,td:first-child{text-align:left}
@@ -182,6 +192,11 @@ tr:hover{background:inherit}
 .hero-cell .hv.w{color:var(--white)}
 .hero-cell .hs{font-size:10px;color:var(--gray);margin-top:2px}
 .hero-big .hv{font-size:34px}
+/* lifetime-equity honesty line: full-width dim strip under the hero cells */
+.hero-lifetime{flex:1 1 100%;color:var(--gray);font-size:10.5px;letter-spacing:.4px;
+  line-height:1.5;padding:6px 6px 0;margin-top:6px;border-top:1px dotted #2a2210}
+.hero-lifetime a{pointer-events:auto;cursor:pointer;color:var(--cyan)}
+.hero-lifetime a:hover{text-decoration:underline}
 
 /* ===== SESSION LIVENESS STRIP ===== */
 #p-session{border-color:#1c3a22;background:linear-gradient(180deg,#040d06,#070707)}
@@ -363,3 +378,11 @@ a.proof-link:hover{background:#16281a}
 #waitlist button:hover{background:#1a4a1a}
 #wl-status{color:#e6c97f}
 #waitlist .wl-note{color:#4a5a4a;font-size:10px}
+
+/* accessibility: honour reduced-motion — kill the marquee, blinks and CRT overlay */
+@media (prefers-reduced-motion: reduce){
+  #marquee{animation:none}
+  .dot,.cursor{animation:none}
+  #crt{display:none}
+  *{transition:none!important}
+}

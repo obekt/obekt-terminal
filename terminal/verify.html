@@ -8,6 +8,12 @@
 <meta name="description" content="The trader.obekt.com track record as a signed, hash-chained, GitHub-anchored log. Verify it yourself — trust nothing, check everything.">
 <link rel="stylesheet" href="style.css">
 <style>
+  /* Page-scoped unlock: this page's pitch is "verify it yourself" — the public
+     key and chain hashes must be selectable/copyable and every link clickable,
+     overriding the deck-wide read-only CSS lockdown. */
+  *{user-select:text!important;-webkit-user-select:text!important;cursor:auto!important}
+  a{pointer-events:auto!important;cursor:pointer!important}
+  button,input,select{display:inline-block!important}
   body{padding-top:64px}
   .vf{max-width:1000px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:16px}
   .vf h1{color:#7fd88f;font-size:20px;letter-spacing:.12em;margin:0}
@@ -80,11 +86,14 @@ fetch('chain.jsonl').then(function(r){return r.text();}).then(function(t){
   lines.forEach(function(l){
     try{var e=JSON.parse(l),p=e.payload;
       var eq=p.okx_equity_usdc!=null?p.okx_equity_usdc:(p.equity_usd!=null?p.equity_usd:(p.alpaca_equity_usd!=null?p.alpaca_equity_usd:p.stocks_equity_usd));
-      var up=p.okx_unrealized_pnl_usdc!=null?p.okx_unrealized_pnl_usdc:p.unrealized_pnl_usd;
+      var up=p.okx_unrealized_pnl_usdc!=null?p.okx_unrealized_pnl_usdc:(p.unrealized_pnl_usd!=null?p.unrealized_pnl_usd:p.alpaca_unrealized_pl_usd);
+      var nopen=(p.open_positions||[]).length;
+      // Flat account with no uPnL field (older Alpaca rows) reads 0.00, not "—".
+      var upTxt=up!=null?up.toFixed(2):(nopen===0?'0.00':'—');
       rows+='<tr><td>'+e.seq+'</td><td>'+e.ts.slice(0,16).replace('T',' ')+
         '</td><td>'+(p.engine||'?')+'</td><td>'+(eq!=null?eq.toFixed(2):'—')+
-        '</td><td>'+(up!=null?up.toFixed(2):'—')+
-        '</td><td>'+((p.open_positions||[]).length)+'</td></tr>';}catch(err){}
+        '</td><td>'+upTxt+
+        '</td><td>'+nopen+'</td></tr>';}catch(err){}
   });
   tb.innerHTML=rows||'<tr><td colspan="6">chain not yet seeded</td></tr>';
   document.getElementById('chain-status').textContent=

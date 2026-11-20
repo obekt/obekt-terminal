@@ -1,6 +1,7 @@
 /* OBEKT TERMINAL — read-only renderer + ledger replay viewer.
    Only interaction: clicking a ledger row opens its decision dossier (ESC/bg closes).
-   Polls data.js every 10s for a near-real-time feel; server rebuilds every 45s. */
+   Revalidates data.json every 10s via fetch (no-cache → 304 when unchanged, no
+   re-render); server rebuilds every 45s. data.js is first-paint only. */
 (function () {
   "use strict";
 
@@ -91,7 +92,7 @@
       ? '<span class="neg">⚠ FEED STALE — LAST SNAPSHOT ' + ageMin + "M AGO (ENGINE MAY BE PAUSED)</span> · "
       : "") +
       "SNAPSHOT " + D.generated.replace("T", " ").slice(0, 19) +
-      " UTC · BUILD " + D.build_ms + "MS · FEED: YAHOO FINANCE PUBLIC + LIVE ENGINE LOG";
+      " UTC · BUILD " + D.build_ms + "MS · FEED: ALPACA NEWS + YAHOO TICKERS + LIVE ENGINE LOG";
   }
 
   /* ---------- cycle countdown ---------- */
@@ -220,7 +221,13 @@
         lvNoTrade ? "w" : "g") +
       cell("CYCLES RUN", (f.cycles || 0).toLocaleString(), (f.jev_calls || 0) + " model calls · ~5m each", "") +
       cell("UPTIME", f.uptime_h ? Math.floor(f.uptime_h / 24) + "D " + Math.round(f.uptime_h % 24) + "H" : "—", "since " + (f.first_ts || "").slice(5, 10), "w") +
-      cell("MODEL COST", "$" + fmt(f.usd_today, 4), "today · avg " + (f.avg_input_tok || "?") + " tok/call", "g");
+      cell("MODEL COST", "$" + fmt(f.usd_today, 4), "today · avg " + (f.avg_input_tok || "?") + " tok/call", "g") +
+      // Lifetime honesty: the hero cells above describe ONLY the 1-day-old stocks
+      // book. The signed chain carries the full account history — peak → now,
+      // including the retired books' losses — so the deck never implies a flat
+      // all-time record. Numbers verified from chain.jsonl (seq 5 peak 2026-11-14,
+      // latest 2026-11-20); retired losses from the frozen OKX/SPOT ledgers.
+      '<div class="hero-lifetime">LIFETIME ACCOUNT (SIGNED CHAIN): $146.80 peak 11-14 → $123.53 now (−15.9%) · this stocks book was funded 11-19 from the retired OKX book · retired losses: OKX −$26.68, SPOT −€21.03 (RETIRED BOOKS section below) · full signed history → <a href="/verify">/verify</a></div>';
   }
 
   /* ---------- desk note ---------- */
@@ -735,7 +742,7 @@
       .sort((a, b) => b[1] - a[1])
       .map(m => "<tr><td class='sym'>" + esc(m[0]) + "</td><td class='" + cls(m[1]) + "'>" + sgn(m[1]) + "%</td><td class='dim'>" +
         (sel.indexOf(m[0]) >= 0 ? "CANDIDATE" : "—") + "</td></tr>").join("");
-    html += "<table><tr><th>SYMBOL</th><th>DAY MOVE</th><th>NEWS SCAN</th></tr>" + rows + "</table>";
+    html += "<table><tr><th>SYMBOL</th><th>DAY MOVE</th><th>CANDIDATE</th></tr>" + rows + "</table>";
     html += '<div class="dim" style="margin-top:4px;font-size:10px">FULL UNIVERSE: ' +
       uni.map(s => esc(s)).join(" · ") + "</div>";
     return html;
@@ -1157,7 +1164,7 @@
           "<td>" + fmt(j.conf, 2) + "</td>" +
           "<td><div style='display:flex;align-items:center;gap:4px;justify-content:flex-end'>" +
           "<div style='height:8px;width:" + cw.toFixed(0) + "px;background:" + (fired ? "var(--green-dim)" : "#333") + "'></div>" +
-          "<span class='" + (j.conf >= cf ? "am" : "dim") + "' style='width:38px;text-align:right'>" + fmt(j.conf, 2) + "</span></div></td>" +
+          "</div></td>" +
           "<td class='dim'>" + esc(j.impact || "—") + "</td>" +
           "<td class='dim'>" + (j.tok || "?") + "</td></tr>";
       }).join("");
@@ -1460,12 +1467,27 @@
   function renderTape(D) {
     trackSession(D);
     const tape = D.tape || [];
-    const html = tape.map(t => {
+    // DISPLAY-LEVEL condensation only: consecutive SCAN rows collapse into ONE
+    // row (newest scan text + count); every MODEL/OPEN/CLOSE/GATE/ALERT row stays
+    // individual. The raw log / data.js retain every cycle — nothing is rewritten.
+    const rows = [];
+    for (let i = 0; i < tape.length; i++) {
+      const t = tape[i];
+      if (t.kind === "SCAN") {
+        let n = 1;
+        while (i + n < tape.length && tape[i + n].kind === "SCAN") n++;
+        rows.push({ t, text: n > 1 ? t.text + " · ×" + n + " scans condensed — raw log retains every cycle" : t.text });
+        i += n - 1;
+      } else {
+        rows.push({ t, text: t.text });
+      }
+    }
+    const html = rows.map(({ t, text }) => {
       const key = t.ts + "|" + t.text;
       const isNew = !firstRender && FRESH_KEYS.has(key);
       return '<div class="tape-row' + (isNew ? " flash-new" : "") + '"><span class="t">' + esc(hhmm(t.ts)) + '</span>' +
         '<span class="k k-' + esc(t.kind) + '">' + esc(t.kind) + '</span>' +
-        '<span class="x c-' + esc(t.color) + '">' + esc(t.text) + "</span></div>";
+        '<span class="x c-' + esc(t.color) + '">' + esc(text) + "</span></div>";
     }).join("");
     $("tape-body").innerHTML = html;
     FRESH_KEYS.clear();
@@ -1900,15 +1922,31 @@
       .catch(() => {});
   }
 
+  let LAST_STAMP = null;
+  const stampOf = (d) => ((d && d.generated) || "") + "|" + ((d && d.build_ms) || "");
   function load() {
-    const s = document.createElement("script");
-    s.src = "data.js?cb=" + Date.now();
-    s.onload = () => { try { renderAll(window.TT_DATA); } catch (e) { console.error(e); } };
-    s.onerror = () => { console.warn("data.js refresh failed"); };
-    document.body.appendChild(s);
+    // Revalidate data.json (fetch, no-cache) instead of re-injecting a
+    // cache-busted data.js <script> every poll (~71KB of remote JS each time).
+    // The server sends Last-Modified, so unchanged polls 304; an unchanged
+    // payload stamp also skips the render path. data.js stays first-paint only.
+    fetch("data.json", { cache: "no-cache" })
+      .then(r => {
+        if (r.status === 304) return null; // unchanged — skip render
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        return r.json();
+      })
+      .then(d => {
+        if (!d) return;
+        const stamp = stampOf(d);
+        if (stamp === LAST_STAMP) return; // 304-equivalent: nothing changed
+        LAST_STAMP = stamp;
+        window.TT_DATA = d;
+        try { renderAll(window.TT_DATA); } catch (e) { console.error(e); }
+      })
+      .catch(() => { console.warn("data.json refresh failed"); });
   }
 
-  if (window.TT_DATA) renderAll(window.TT_DATA);
+  if (window.TT_DATA) { LAST_STAMP = stampOf(window.TT_DATA); renderAll(window.TT_DATA); }
   setInterval(renderClock, 1000); renderClock();
   setInterval(load, 10000);
   bootSequence(window.TT_DATA || {});
@@ -1927,7 +1965,7 @@ function bootSequence(D) {
   const lines = [
     "▚▚ OBEKT TERMINAL " + ((D.engine || {}).version || "v11.0-news") + " — AUTONOMOUS TRADING OBSERVATION DECK",
     "",
-    "[ok] link alpaca us stocks .................. " + ((D.tickers || []).length || 10) + " MARKET FEEDS SYNCED (YAHOO FINANCE)",
+    "[ok] link alpaca us stocks .................. " + ((D.tickers || []).length || 10) + " MARKET FEEDS SYNCED (ALPACA + YAHOO)",
     "[ok] engine log ........................... " + (f.cycles ? f.cycles.toLocaleString() : "—") + " CYCLES · " + (f.uptime_h || "—") + "H UNATTENDED",
     "[ok] halogen news decision model .......... " + (f.jev_calls || "—") + " TYPED CALLS · SELF-HOSTED, $0 MARGINAL",
     "[ok] selectivity funnel .................... " + (f.pair_scans_all ? f.pair_scans_all.toLocaleString() : "—") + " SCANS → " + (f.opens || "—") + " TRADES OPENED",

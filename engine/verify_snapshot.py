@@ -113,6 +113,11 @@ def build_payload():
              "upl_usd": float(p.get("unrealized_pl") or 0)}
             for p in pos if p.get("asset_class") == "us_equity" and float(p.get("qty") or 0) != 0
         ],
+        # account-level unrealized P&L (sum over us_equity positions; 0.0 when
+        # flat) so the proof page shows a real number instead of "—"
+        "alpaca_unrealized_pl_usd": sum(
+            float(p.get("unrealized_pl") or 0)
+            for p in pos if p.get("asset_class") == "us_equity"),
         "engine_log_opens": o,
         "engine_log_closes": c,
         "method": "alpaca_get_account+positions; log event counts; no LLM",
