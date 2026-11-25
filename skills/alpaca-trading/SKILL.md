@@ -14,11 +14,16 @@ metadata:
 Venue of the ObekT live trading platform after the OKX→Alpaca migration
 (operator directive: real stocks, decisions from stock news, crypto value
 moved over as buying power — NO crypto trading). Live engine:
-`engine/alpaca_stocks.py` (v11.0-news) in this repo, run on the VPS by a
+`engine/alpaca_stocks.py` (v13.0-volbrackets) in this repo, run on the VPS by a
 systemd timer (`obekt-stocks.timer`) every 5m. Public deck trader.obekt.com reads its
 telemetry; signed transparency chain continues across the venue change.
 The OKX era is archived in `*_okx_retired` files — the okx-trading skill covers
 the retired venue.
+
+Algorithm history: v11.0-news (11-19, catalyst-only, 48h holds) → v12.0-intraday
+(11-20, operator directive "multiple trades a day, flat by the close") →
+v13.0-volbrackets (11-25, kill-gate replacement: v12 closed 34 trades at net
+−$0.09; fixed LLM-set 0.8% stops sat inside the noise band, 53% stop-outs).
 
 ## When to Use
 
@@ -39,15 +44,18 @@ the retired venue.
 - Stocks commission-free; sells pay ~0.003% SEC/TAF (estimate it on close).
   Crypto pairs (if ever used): 0.15% maker / 0.25% taker, long-only, 24/7 —
   ~5x the OKX perp round-trip cost, never port a crypto fee model blind.
-- Regular hours 09:30–16:00 ET (`GET /v2/clock`). v1 engine trades regular
-  hours only; overnight/weekend gap risk is real and must be stated, not
-  hidden — exits cannot execute while the market is closed.
+- Regular hours 09:30–16:00 ET (`GET /v2/clock`). The engine is INTRADAY:
+  no entries after 15:30 ET, flat everything 15:50 ET — overnight/weekend gap
+  risk is designed out, the book is flat every night.
 
 ## Standing operator rules
 
 - Platform stays LIVE. Failed algorithms get REPLACED at a pre-registered
-  kill-gate (e.g. 30 closes OR 14 days, net ≤ 0 → replace), never silently
-  stopped; no paper trading for live capital. Mechanics review ~day 3.
+  kill-gate (30 closes OR 7 days, net ≤ 0 → replace), never silently
+  stopped; no paper trading for live capital. The gate is enforced on the
+  REALIZED net of the version's own closes — v12 hit it and was replaced.
+- Intraday turnover is the operator directive: multiple trades a day, flat by
+  the close — "not aiming long term stocks with that pocket money".
 - Strategy edge is venue-specific. Re-validate on the new venue's data, fees
   and leverage before going live; report honest EV ("no demonstrated edge
   yet" is a valid launch state when the kill-gate is pre-registered).
@@ -65,11 +73,14 @@ the retired venue.
 
 ## Engine architecture (manage/decide split)
 
-News signal (Alpaca News API, free) → self-hosted halogen via
+News signal (Alpaca News API + Yahoo RSS, free) → self-hosted halogen via
 chat.obekt.com/v1 ($0 marginal) returns TYPED JSON (action/confidence/impact/
-target/stop/rationale) → deterministic gates → fractional market orders →
-engine-managed TP/SL + time exit (fractional orders cannot carry server
-brackets). Any LLM transport/parse/schema failure FAILS CLOSED to no_trade.
+horizon/rationale — catalyst classification ONLY) → deterministic gates →
+fractional market orders → engine-managed exits: TP/SL computed BY CODE from
+the symbol's 14-session ATR (SL = 0.35×ATR% clamped 0.6–2.0, TP = 1.5×SL
+clamped 1.0–3.0) + 6h time exit + flat 15:50 ET (fractional orders cannot carry
+server brackets). Any LLM transport/parse/schema failure FAILS CLOSED to
+no_trade.
 Full gate list, LLM contract, telemetry schema and the validation recipe:
 `references/news-engine.md`. Endpoint/feed/wallet quirks and the fund-move
 procedure: `references/api-and-data.md`.
@@ -89,8 +100,17 @@ procedure: `references/api-and-data.md`.
 - Free data plan: long-range historical SIP bars 403; IEX historical works
   for multi-month studies (prices near-identical for drift measurement).
 - LLM JSON breaks in the rationale string: parse tolerantly (direct → brace
-  block → field regex), require brackets only for `buy` (no_trade carries 0),
-  forbid double-quote chars inside rationale in the prompt.
+  block → field regex), forbid double-quote chars inside rationale in the
+  prompt.
+- Never let the LLM set exit geometry: v12's model templated tp 1.2 / sl 0.8
+  on 32/39 trades (confidence anchored at 0.62 on 30/39). Brackets belong to
+  code, scaled to measured per-symbol volatility; ask the model only to
+  classify the catalyst, and prompt for calibrated confidence across the full
+  range.
+- Symbol-keyed position meta + re-entry while held = overwritten exit
+  management (v12 bug): never pyramid into a held symbol; clamp the leg
+  budget to actual cash and fail-soft entry errors, else an Alpaca 40310000
+  (cash spent) kills the cycle before the status write.
 - Unit-test the decision contract with a synthetic strong catalyst AND a
   noise item before trusting live cycles — live news may all gate-reject,
   masking a broken LLM path.

@@ -35,7 +35,7 @@ Two pieces, both in this repo:
 
 | | What it does |
 |---|---|
-| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v11.0-news) polls the **Alpaca News API + Yahoo per-ticker RSS** for fresh headlines on a 60-name liquid US-stock universe (30 mega-caps + 30 news-heavy mid/high-beta names), asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, target/stop, horizon, rationale), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (TP/SL + 48h time exit). **Risk lives in code, never in the model:** the LLM never sizes a position or overrides a gate, and any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
+| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v13.0-volbrackets) polls the **Alpaca News API + Yahoo per-ticker RSS** for fresh headlines on a 60-name liquid US-stock universe (30 mega-caps + 30 news-heavy mid/high-beta names), asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, horizon, rationale — catalyst classification only), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (**TP/SL computed by code from the symbol's measured 14-session ATR**, + 6h time exit + flat-everything 15:50 ET). **Risk lives in code, never in the model:** the LLM never sizes a position, never sets a bracket, and never overrides a gate; any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
 | **`terminal/`** — the observation deck | A **Bloomberg-style text UI** (pure HTML/CSS/JS, no framework) that reads the engine's raw logs and renders them: an always-visible open-position badge, the live stocks book, equity curve, selectivity funnel, decision scatter, the exact headline + price context the model saw, a candlestick replay of every trade, and a **local LLM** writing the desk commentary. Stocks-first; the retired crypto books live in one collapsed block at the bottom. **Nothing is clickable except the trade replay** — it is observation only, by design. |
 
 The thesis, in one line: **a self-hosted typed decision-model chooses, deterministic code enforces risk, a local LLM explains, and a human watches — none of them parse each other's prose.**
@@ -52,12 +52,12 @@ Every number below is real, pulled live from the running engine. Including the l
 <td width="50%"><img src="docs/screenshots/2.png" width="100%"/><br/><sub><b>2 · Why it barely trades.</b> The <b>decision-gate checklist</b> (news freshness, market hours, spread/ask/quote pre-gates, chase/knife guards, conf floor, impact, slots, bracket geometry, breaker) and the <b>selectivity funnel</b> — universe scans → fresh-headline candidates → model calls → buy picks → opens. Saying "no" is the job.</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="docs/screenshots/3.png" width="100%"/><br/><sub><b>3 · The tape.</b> The <b>event tape</b> streams every cycle as SCAN / GATE / MODEL rows — including the deterministic gate rejects (spread, ask-deviation, knife) and the halogen no-trade rationales. The <b>trade ledger</b> shows its honest empty state: no closed stock trades yet.</sub></td>
+<td width="50%"><img src="docs/screenshots/3.png" width="100%"/><br/><sub><b>3 · The tape.</b> The <b>event tape</b> streams every cycle as SCAN / GATE / MODEL rows — including the deterministic gate rejects (spread, ask-deviation, knife) and the halogen no-trade rationales. The <b>trade ledger</b> pictured in its launch-window empty state; the live ledger now carries closed Alpaca trades, each linked to its replay.</sub></td>
 <td width="50%"><img src="docs/screenshots/4.png" width="100%"/><br/><sub><b>4 · The honest history.</b> The retired crypto books, collapsed at the bottom: <b>OKX X-Perps — 426 closes, −$26.68 net of all fees</b>; <b>spot EUR — 132 trades, −€21.03</b>. Full ledgers and replays retained. Deleting a losing history would be dishonest.</sub></td>
 </tr>
 </table>
 
-And the piece that makes people lean in — **click any closed trade in the ledger** and you get a full **decision replay**: the candlestick chart with entry/exit + TP/SL marked, the model's vote and rationale, the exact headline + price context it was shown, the pre-entry gauntlet it survived, the full lifecycle timeline, the ledger outcome, and a one-line LLM post-mortem. The live stocks book has not closed a trade yet, so the ledger shows its honest empty state — every row will link to a replay once the first fill lands. The replay viewer is wired and the 500+ retired OKX dossiers are retained in `sample_data/dossiers/` (the retired books themselves are shown as collapsed summaries).
+And the piece that makes people lean in — **click any closed trade in the ledger** and you get a full **decision replay**: the candlestick chart with entry/exit + TP/SL marked, the model's vote and rationale, the exact headline + price context it was shown, the pre-entry gauntlet it survived, the full lifecycle timeline, the ledger outcome, and a one-line LLM post-mortem. The live stocks book has closed real trades (the v12 era: 34 closes, net −$0.09 — replaced at its kill-gate by v13), and every ledger row links to its replay. The 500+ retired OKX dossiers are retained in `sample_data/dossiers/` (the retired books themselves are shown as collapsed summaries).
 
 ---
 
@@ -65,14 +65,14 @@ And the piece that makes people lean in — **click any closed trade in the ledg
 
 The system has **one live book** (Alpaca US stocks) and **two retired books** (OKX X-Perps and spot EUR) kept as frozen history.
 
-- **US STOCKS** (`engine/alpaca_stocks.py`, v11.0-news) — **LIVE**. News-driven,
+- **US STOCKS** (`engine/alpaca_stocks.py`, v13.0-volbrackets) — **LIVE**. News-driven,
   **LONG-ONLY**, fractional shares, USD cash, **no leverage** at this equity
   (leverage needs $2k under Alpaca's intraday framework; shorting needs margin
   approval). **Commission-free** stocks — the only trading costs are a tiny
   sell-side SEC/TAF regulatory fee (~0.003% on closes) and the spread.
-  **Regular hours only** (09:30–16:00 ET): overnight/weekend gap risk is real and
-  accepted at experimental scale — exits cannot execute while the market is
-  closed, so they defer to the next open. Capital: **$123.53**.
+  **Intraday by design**: regular hours only (09:30–16:00 ET), no new entries
+  after 15:30 ET, **flat everything at 15:50 ET** — overnight/weekend gap risk
+  is designed out, the book is flat every night. Capital: **~$124**.
 - **OKX X-PERPS** (`engine/okx_perp.py` / `okx_mom.py`) — **RETIRED 2026-11-19**.
   Two-way USD-settled MiFID expiry-perps. Final record: **426 closes, 40.8% win
   rate, −$26.68 net of all fees on $134.19 capital** (2026-10-15→11-19, last
@@ -88,10 +88,15 @@ and did **not** survive its kill-gate; both crypto books finished negative. A
 blind edge** (post-news 4h absolute move 1.01% vs a 1.48% unconditional baseline).
 So the hypothesis is not "news moves stocks" — it is that **the LLM catalyst
 filter** (separating genuine high-impact catalysts from routine noise) is where
-any edge has to come from. That is unproven. The stocks book launches with a
-**pre-registered kill-gate: 30 closed trades OR 14 days, whichever first; live
+any edge has to come from. That is unproven. Every algorithm version launches with a
+**pre-registered kill-gate: 30 closed trades OR 7 days, whichever first; live
 realized net ≤ 0 → replace the algorithm** (the operator's standing rule: failed
-algorithms get replaced, not silently stopped).
+algorithms get replaced, not silently stopped). **The gate is real, not
+decorative:** the first intraday version (v12.0) hit it on 2026-11-25 — 34
+closes, net −$0.09, a 53% stop-out rate from fixed 0.8% stops sitting inside
+the noise band — and was replaced by **v13.0-volbrackets**: code-computed
+ATR-scaled brackets (the LLM no longer sets exits), a deep-dip entry rule, and
+no same-symbol pyramiding.
 
 ```
    every 5 minutes, unattended (entries only in regular market hours):
@@ -99,17 +104,18 @@ algorithms get replaced, not silently stopped).
    │ 1. SCAN      Alpaca News API · fresh headlines ≤90m         │
    │              on a 60-name US-stock universe · wire + RSS    │
    │ 2. FILTER    one candidate per symbol · dedupe seen ids     │  ← deterministic code
-   │              one entry per symbol per day                   │
+   │              45m post-exit cooldown · no pyramiding         │
    │ 3. PRE-GATE  ask-vs-last ≤2.5% · quote ≤90s · spread guard  │     before any LLM call
    │              chase ≤+7% day · knife ≥−9% day                │
    │ 4. DECIDE    halogen → typed JSON: action buy|no_trade,     │  ← self-hosted, $0 marginal
-   │              confidence, impact, target/stop, horizon       │     fails closed to no_trade
-   │ 5. VETO      conf ≥0.60 AND impact ≠ low · MAX_OPEN 2 slots │  ← code owns risk
-   │ 6. SIZE      equity × 0.98 / 2 per leg · fractional shares  │
-   │              TP 1–5% / SL 0.8–3% · enforce TP ≥ 1.5× SL     │
-   │ 7. EXECUTE   market order · regular hours 09:30–16:00 ET    │
-   │ 8. MANAGE    engine-managed TP/SL (5m poll) + 48h time exit │  ← fractional orders can't
-   │              −8% daily breaker (UTC auto-clear) · kill files│     carry server brackets
+   │              confidence, impact, horizon (catalyst only)    │     fails closed to no_trade
+   │ 5. VETO      conf ≥0.55 · impact ≠ low · MAX_OPEN 3 slots   │  ← code owns risk
+   │              deep dip ≤−4% needs high impact + conf ≥0.70   │
+   │ 6. SIZE      equity × 0.98 / 3 per leg · clamped to cash    │
+   │              TP/SL from 14-session ATR · TP ≥ 1.5× SL       │
+   │ 7. EXECUTE   market order · no entries after 15:30 ET       │
+   │ 8. MANAGE    engine TP/SL (5m poll) · 6h time exit · FLAT   │  ← fractional orders can't
+   │              15:50 ET · −8% breaker (UTC auto-clear)        │     carry server brackets
    └─────────────────────────────────────────────────────────────┘
                           │
                           ▼  raw JSONL telemetry (every scan, gate, vote, fill)
@@ -120,7 +126,7 @@ algorithms get replaced, not silently stopped).
 ```
 
 **The key design decision:** the decision model returns **typed JSON** (`action`,
-`confidence`, `impact`, `target_pct`, `stop_pct`, `horizon_hours`, `rationale`) —
+`confidence`, `impact`, `horizon_hours`, `rationale`) —
 **never free text**. So there is no prompt-injection surface, no number
 hallucination, and nothing to parse. Any transport/parse/schema failure **fails
 closed to `no_trade`**. The model is an *advisor*; **deterministic code is the risk
@@ -298,7 +304,7 @@ A single-page, zero-dependency text UI — no React, no build step, no CDN. Just
 
 The economics panel says it better than we can, but the headline:
 
-- **Decisions:** the halogen decision model is **self-hosted at $0 marginal cost**. A full news call is one headline + summary + price context (a few hundred tokens), at most 4 calls per cycle. Thousands of decisions for the price of the hardware you already run.
+- **Decisions:** the halogen decision model is **self-hosted at $0 marginal cost**. A full news call is one headline + summary + price context (a few hundred tokens), at most 8 calls per cycle. Thousands of decisions for the price of the hardware you already run.
 - **Desk commentary:** runs on **your local model** (or any cheap endpoint) — effectively free, cached, and optional.
 - **Trading:** stocks are **commission-free**. The only costs are a tiny sell-side **SEC/TAF regulatory fee (~0.003% on closes)** and the **spread**. With fees near zero, the whole game is **signal quality** — fresh, high-impact news the market hasn't priced in — which is exactly why the chase guard exists. (The retired OKX era was the opposite: exchange fees dominated every result. The deck's economics panel splits the legacy paid TypeSafe spend from the self-hosted halogen era so you can see the difference.)
 
@@ -375,7 +381,7 @@ This repo contains **no keys, no credentials, and no personal infrastructure**. 
 ## The boring but important part
 
 - **Not financial advice.** Not investment advice. Not a signal service. Not a product. An experiment, published as-is.
-- **It has lost money, and may again.** The retired OKX X-Perp book finished **−$26.68** (426 closes, 40.8% win rate) and the spot EUR book **−€21.03** (132 trades, profit factor 0.62). The live stocks book has **no demonstrated edge yet** — it launches with a pre-registered kill-gate (30 closes or 14 days, net ≤ 0 → replace). We show the real numbers because fake ones would be a lie.
+- **It has lost money, and may again.** The retired OKX X-Perp book finished **−$26.68** (426 closes, 40.8% win rate) and the spot EUR book **−€21.03** (132 trades, profit factor 0.62). The live stocks book has **no demonstrated edge yet**: its first intraday version (v12) closed 34 trades at net **−$0.09** and was replaced at its pre-registered kill-gate (30 closes or 7 days, net ≤ 0 → replace) by v13. We show the real numbers because fake ones would be a lie.
 - **You are responsible.** If you point this at a funded account, every fill, every loss, and every consequence is yours alone.
 - **No warranty.** MIT-licensed, zero warranty, zero liability. See [LICENSE](LICENSE) and [DISCLAIMER.md](DISCLAIMER.md).
 - **Do your own research.** Then do more. Then assume you're still missing something.

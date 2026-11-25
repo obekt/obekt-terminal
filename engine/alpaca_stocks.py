@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
-"""alpaca_stocks.py — v12.0-intraday: INTRADAY NEWS-MOMENTUM US EQUITY engine on Alpaca.
+"""alpaca_stocks.py — v13.0-volbrackets: INTRADAY NEWS-MOMENTUM US EQUITY engine on Alpaca.
+
+v13.0 (2026-11-25, KILL-GATE REPLACEMENT of v12 — pre-registered gate fired:
+34 closes >= 30 target, live realized net -$0.09 <= 0). Evidence from the v12
+book (11-20..11-25, 39 entries / 34 closes):
+  - LLM bracket templating: 32/39 entries carried EXACTLY tp 1.2 / sl 0.8 and
+    30/39 confidence 0.62 — the model anchored, it did not differentiate;
+  - fixed 0.8% stops sat inside the noise band: 18/34 closes were stops (53%),
+    5 of them within 10 minutes of entry; win rate 40%, avg win ~1.5% vs avg
+    loss ~0.95% -> a breakeven machine;
+  - same-symbol re-entry while still held (cooldown measured from last EXIT)
+    overwrote symbol-keyed meta and orphaned earlier lots (UBER x4 on 11-24).
+v13 changes (code owns risk, harder):
+  - BRACKETS ARE CODE-COMPUTED from measured per-symbol volatility (14-session
+    daily ATR, IEX): SL = clamp(0.35 x ATR%, 0.6, 2.0), TP = clamp(1.5 x SL,
+    1.0, 3.0). The LLM no longer outputs target/stop at all — it classifies the
+    catalyst (action/confidence/impact), which is its actual job;
+  - prompt asks for CALIBRATED confidence across the full range (anti-anchor);
+  - deep-dip rule: day_chg <= -4% requires impact=high AND conf >= 0.70;
+  - no pyramiding: a symbol already held is never re-entered (meta overwrite
+    bug fixed);
+  - cash-clamped leg budget + fail-soft entries: v12 sized off equity alone and
+    an unhandled Alpaca 40310000 (cash spent) killed the cycle before status();
+    v13 clamps the budget to actual cash and logs entry errors instead of
+    crashing the loop;
+  - everything else kept: intraday clock (no entries >15:30 ET, FLAT 15:50 ET),
+    MAX_OPEN 3, 45m post-exit cooldown, -8% daily breaker, fail-closed LLM,
+    same telemetry filenames/events (deck + signed chain unchanged).
+HONEST EV: volatility-scaled geometry removes the measured noise-stop failure
+mode; the catalyst edge itself is still unproven. KILL-GATE v13 (pre-registered
+11-25): 30 closed trades OR 7 days (~12-02), whichever FIRST, live realized
+net <= 0 -> replace (operator standing rule).
 
 v12.0 (2026-11-20, OPERATOR DIRECTIVE: "we want more trades. multiple trades a
 day. we are not aiming long term stocks with that pocket money"): recalibrated
@@ -65,7 +96,7 @@ import json, os, sys, time, datetime, urllib.request, urllib.error, uuid, hashli
 from zoneinfo import ZoneInfo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE_VERSION = "v12.0-intraday"
+ENGINE_VERSION = "v13.0-volbrackets"
 DRY = "--dry-run" in sys.argv
 
 LOG = os.path.join(HERE, "perp_log.jsonl")
@@ -155,9 +186,18 @@ ASK_VS_LAST_PCT = 2.5        # ghost-quote guard: IEX ask >2.5% off the last
 QUOTE_STALE_S = 90
 CHASE_CAP_PCT = 7.0          # don't buy a name already +7% on the day
 KNIFE_FLOOR_PCT = -9.0       # don't catch a -9% day even on "good" news
-TP_MIN, TP_MAX = 0.8, 2.5    # v12 intraday geometry (1-6h drift, not 48h)
-SL_MIN, SL_MAX = 0.5, 1.5
+DEEP_DIP_PCT = -4.0          # v13: day_chg <= -4% needs impact=high + conf>=0.70
+DEEP_DIP_CONF = 0.70
+# v13 volatility geometry: brackets are CODE-computed from per-symbol 14-session
+# daily ATR (IEX). v12's LLM-set fixed 0.8% stops sat inside the noise band
+# (18/34 stops, 5 within 10 min). SL = 0.35 x ATR% gives each name room to breathe.
+ATR_SESSIONS = 14
+ATR_SL_FRAC = 0.35
+SL_MIN, SL_MAX = 0.6, 2.0    # v13 clamp on the volatility-derived stop
+TP_MIN, TP_MAX = 1.0, 3.0    # v13 clamp on the target
 TP_SL_RATIO = 1.5            # enforce TP >= 1.5 x SL
+ATR_FALLBACK_SL = 1.2        # wider-than-v12 default if ATR fetch fails (logged)
+VOL_CACHE = os.path.join(HERE, "vol_cache.json")
 MAX_HOLD_H = 6.0             # v12: intraday hold; time exit
 COOLDOWN_MIN = 45            # v12: re-entry lockout per symbol after an exit
 ENTRY_CUTOFF_ET = (15, 30)   # no new entries after 15:30 ET (let them play out)
@@ -381,6 +421,54 @@ def price_context(sym, snap):
             "day_vol": float(db.get("v") or 0), "quote_stale_s": round(stale_s),
             "prev_close": prev}
 
+# ---------------- v13 volatility geometry (code owns brackets) ----------------
+def atr_pct(sym):
+    """14-session daily ATR as % of last close, IEX feed (free-plan safe).
+    Cached per UTC day in vol_cache.json — one bars call per symbol per day.
+    Returns None on any failure (caller falls back to ATR_FALLBACK_SL)."""
+    today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+    cache = load_json(VOL_CACHE, {})
+    hit = cache.get(sym)
+    if hit and hit.get("day") == today and hit.get("atr") is not None:
+        return float(hit["atr"])
+    try:
+        start = (datetime.datetime.now(datetime.timezone.utc)
+                 - datetime.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        d = api("GET", f"/v2/stocks/bars?symbols={sym}&timeframe=1Day&limit={ATR_SESSIONS + 1}"
+                       f"&start={start}&feed=iex&adjustment=raw", base=DATA)
+        bars = (d.get("bars") or {}).get(sym) or []
+        if len(bars) < 5:
+            return None
+        trs = []
+        for i in range(1, len(bars)):
+            h, l, pc = float(bars[i]["h"]), float(bars[i]["l"]), float(bars[i - 1]["c"])
+            trs.append(max(h - l, abs(h - pc), abs(l - pc)))
+        last_c = float(bars[-1]["c"])
+        if last_c <= 0:
+            return None
+        atr = sum(trs[-ATR_SESSIONS:]) / min(len(trs), ATR_SESSIONS) / last_c * 100
+        cache[sym] = {"day": today, "atr": round(atr, 4)}
+        save_json(VOL_CACHE, cache)
+        return atr
+    except Exception as e:
+        logrec({"event": "stocks_atr_err", "inst": sym, "err": str(e)[:140]})
+        return None
+
+def vol_brackets(sym):
+    """Code-computed TP/SL from measured volatility. v12 lesson: the LLM
+    templated 1.2/0.8 on 32/39 trades; fixed 0.8% stops were inside the noise
+    band. Here the stop scales with the name's actual daily range."""
+    a = atr_pct(sym)
+    if a is None:
+        sl = ATR_FALLBACK_SL
+        logrec({"event": "stocks_atr_fallback", "inst": sym, "sl_pct": sl})
+    else:
+        sl = max(SL_MIN, min(SL_MAX, ATR_SL_FRAC * a))
+    tp = max(TP_MIN, min(TP_MAX, TP_SL_RATIO * sl))
+    if tp < TP_SL_RATIO * sl:
+        tp = round(TP_SL_RATIO * sl, 2)
+    return round(tp, 2), round(sl, 2), (round(a, 3) if a is not None else None)
+
 # ---------------- halogen decision ----------------
 SYS_PROMPT = (
     "You are the entry decision model for a small LIVE INTRADAY US-equity news book "
@@ -397,10 +485,17 @@ SYS_PROMPT = (
     "news actually about a DIFFERENT company, macro stories with no company angle, "
     "stale reprints, and negative catalysts (long-only — bad news is not tradable here). "
     "Good news on a stock already up big today may be priced in (chase risk) — weigh it. "
-    "target_pct/stop_pct are 1-6h expectations: target 0.8-2.5, stop 0.5-1.5. "
+    "A stock already DOWN 4% or more today is falling for a reason: only a HIGH-impact "
+    "catalyst that clearly overrides the selloff is tradable there; medium news on a "
+    "deep dip is usually noise. "
+    "Take-profit and stop levels are set by code from measured volatility — do NOT "
+    "output target_pct or stop_pct. Your job is catalyst classification only. "
+    "Calibrate confidence across the FULL 0-1 range: 0.9+ only for rare unambiguous "
+    "market-moving catalysts; 0.7-0.85 strong substantive catalysts; 0.55-0.7 plausible "
+    "but mixed evidence; below 0.55 weak. Do not anchor on one habitual value. "
     "Reply STRICT JSON only: {\"action\":\"buy\"|\"no_trade\",\"confidence\":0.0-1.0,"
-    "\"impact\":\"high\"|\"medium\"|\"low\",\"target_pct\":number,\"stop_pct\":number,"
-    "\"horizon_hours\":number,\"rationale\":\"<=200 chars\"}. "
+    "\"impact\":\"high\"|\"medium\"|\"low\",\"horizon_hours\":number,"
+    "\"rationale\":\"<=200 chars\"}. "
     "No prose outside the JSON. Never use double-quote characters inside rationale."
 )
 
@@ -476,17 +571,14 @@ def halogen_decide(item, ctx, equity_usd, budget):
         d = json.loads(r.read().decode())
     txt = d["choices"][0]["message"]["content"].strip()
     ans = parse_decision(txt)
-    # schema check — fail closed on anything malformed. Brackets are only
-    # required for buy: a no_trade answer legitimately carries 0/none.
+    # schema check — fail closed on anything malformed. v13: brackets are
+    # code-computed from volatility, so the model is NOT asked for them;
+    # legacy outputs that still carry them parse fine and are ignored.
     assert ans.get("action") in ("buy", "no_trade"), f"bad action: {str(ans)[:120]}"
     conf = float(ans.get("confidence"))
     assert 0.0 <= conf <= 1.0, f"bad confidence: {str(ans)[:120]}"
     assert ans.get("impact") in ("high", "medium", "low"), f"bad impact: {str(ans)[:120]}"
-    if ans["action"] == "buy":
-        tp = float(ans.get("target_pct")); sl = float(ans.get("stop_pct"))
-        assert 0 < tp < 50 and 0 < sl < 50, f"bad bracket: {str(ans)[:120]}"
-    else:
-        tp = float(ans.get("target_pct") or 0); sl = float(ans.get("stop_pct") or 0)
+    tp = float(ans.get("target_pct") or 0); sl = float(ans.get("stop_pct") or 0)
     usage = d.get("usage") or {}
     return {"action": ans["action"], "conf": conf, "impact": ans["impact"],
             "target_pct": tp, "stop_pct": sl,
@@ -525,8 +617,9 @@ def submit_order(sym, qty, side):
         return o, "partial"
     return None, o.get("status") or "unfilled"
 
-def open_one(sym, item, ctx, ans, eq):
-    budget = min(eq * MAX_NOTIONAL_FRAC / MAX_OPEN, MAX_NOTIONAL_USD)
+def open_one(sym, item, ctx, ans, eq, budget=None):
+    if budget is None:
+        budget = min(eq * MAX_NOTIONAL_FRAC / MAX_OPEN, MAX_NOTIONAL_USD)
     ask = ctx["ask"] or ctx["px"]
     if ask <= 0:
         logrec({"event": "perp_gate_reject", "inst": sym, "why": "no ask price"})
@@ -536,6 +629,8 @@ def open_one(sym, item, ctx, ans, eq):
     if notional < 1.0:
         logrec({"event": "perp_gate_reject", "inst": sym, "why": f"notional {notional:.2f} < $1 min"})
         return False
+    # v13: brackets arrive code-computed from volatility (cycle fills them in
+    # before this call); the clamp here is a bug guard, not the LLM leash.
     tp = max(TP_MIN, min(TP_MAX, ans["target_pct"]))
     sl = max(SL_MIN, min(SL_MAX, ans["stop_pct"]))
     if tp < TP_SL_RATIO * sl:
@@ -561,12 +656,14 @@ def open_one(sym, item, ctx, ans, eq):
                  "news_rationale": ans["rationale"], "jev_conf": ans["conf"],
                  "jev_margin": None, "jev_noul": None, "bracket": bk,
                  "hwm_pct": 0.0, "algo_ok": False, "entry_fee": 0.0,
-                 "entry_ordId": od.get("id"), "max_hold_h": MAX_HOLD_H}
+                 "entry_ordId": od.get("id"), "max_hold_h": MAX_HOLD_H,
+                 "atr_pct": ans.get("atr_pct")}
     save_meta(meta)
     logrec({"event": "perp_open", "inst": sym, "side": "long", "contracts": filled_qty,
             "notional_usd": round(notional, 2), "fill_px": fill_px, "conf": ans["conf"],
             "margin": None, "noul": None, "algo_ok": False, "realized_fee": 0.0,
-            "entry_type": "market", "headline": item["headline"], "bracket": bk})
+            "entry_type": "market", "headline": item["headline"], "bracket": bk,
+            "atr_pct": ans.get("atr_pct")})
     return True
 
 def close_one(sym, m, reason):
@@ -721,8 +818,12 @@ def scan(eq, force=False, window_min=NEWS_WINDOW_MIN):
     cands = []
     now_ts = time.time()
     exits = st.get("exits", {})
+    held = set(load_meta().keys())  # v13: no pyramiding — meta is symbol-keyed,
+    # a second entry while held overwrote the first lot's exit management (v12 bug)
     for n in fresh:
         for sym in n["symbols"]:
+            if sym in held:
+                continue
             last_exit = exits.get(sym)
             if last_exit and now_ts - last_exit < COOLDOWN_MIN * 60:
                 continue  # v12 re-entry cooldown (replaces the daily lockout)
@@ -774,10 +875,11 @@ def cycle():
     # v12 deterministic intraday clock: flat everything 10 min before the close,
     # no new entries in the last 30 min. Overnight gap risk is designed OUT.
     if is_open and et_hm >= FLAT_TIME_ET and meta:
+        n_flat = len(meta)
         for sym, m in list(meta.items()):
             close_one(sym, m, "flat-by-close (15:50 ET rule)")
         meta = load_meta()
-        logrec({"event": "flat_by_close", "n_closed": len(out.get("closed", [])) or "all", "et": now_et.strftime("%H:%M")})
+        logrec({"event": "flat_by_close", "n_closed": n_flat, "et": now_et.strftime("%H:%M")})
     entries_allowed = is_open and et_hm < ENTRY_CUTOFF_ET
     # On the closed->open transition widen the window to 18h so overnight /
     # pre-market catalysts are visible at the open (the 90m window alone would
@@ -799,7 +901,22 @@ def cycle():
         out["skipped"].append(f"MAX_OPEN {MAX_OPEN} reached")
         logrec({"event": "perp_no_trade", "why": f"MAX_OPEN {MAX_OPEN} reached"})
     else:
-        budget = min(eq * MAX_NOTIONAL_FRAC / MAX_OPEN, MAX_NOTIONAL_USD)
+        # v13: clamp the leg budget to actual cash — v12 sized off equity alone,
+        # so once cash was spent every buy raised an unhandled Alpaca 40310000
+        # and killed the cycle before status() (stale-snapshot IDLE alarms).
+        if DRY:
+            cash = eq
+        else:
+            try:
+                cash = float(api("GET", "/v2/account").get("cash") or 0)
+            except Exception:
+                cash = eq
+        budget = min(eq * MAX_NOTIONAL_FRAC / MAX_OPEN, cash * 0.98, MAX_NOTIONAL_USD)
+        if budget < 1.0:
+            out["skipped"].append(f"cash ${cash:.2f} — no $1-min leg possible")
+            logrec({"event": "perp_no_trade", "why": f"insufficient cash {cash:.2f}"})
+            save_json(NEWS_STATE, st)
+            cands = []
         calls = 0
         for c in cands:
             if calls >= MAX_LLM_CALLS or len(load_meta()) >= MAX_OPEN:
@@ -831,6 +948,11 @@ def cycle():
                 logrec({"event": "perp_no_trade", "inst": sym, "why": "LLM fail-closed"})
                 st["seen"][item["id"]] = time.time()
                 continue
+            # v13: brackets are code-computed from measured volatility BEFORE
+            # the decision event, so the deck shows the real exit geometry.
+            if ans["action"] == "buy":
+                tp, sl, atr = vol_brackets(sym)
+                ans["target_pct"], ans["stop_pct"], ans["atr_pct"] = tp, sl, atr
             # perp_jev-shaped event: feeds the deck's decision panels unchanged
             logrec({"event": "perp_jev", "choice": f"buy_{sym}" if ans["action"] == "buy" else "no_trade",
                     "chosen_inst": sym if ans["action"] == "buy" else None,
@@ -853,11 +975,23 @@ def cycle():
                 gate_fails.append(f"conf {ans['conf']:.2f} < {CONF_FLOOR}")
             if ans["impact"] == "low":
                 gate_fails.append("impact low")
+            # v13 deep-dip rule: medium news on a -4%+ day was a coin flip with
+            # instant stops in v12; require a high-impact override + conviction.
+            if ctx["day_chg_pct"] <= DEEP_DIP_PCT and (
+                    ans["impact"] != "high" or ans["conf"] < DEEP_DIP_CONF):
+                gate_fails.append(f"deep dip {ctx['day_chg_pct']}% needs impact=high + conf>={DEEP_DIP_CONF}")
             if gate_fails:
                 logrec({"event": "perp_gate_reject", "inst": sym, "why": "; ".join(gate_fails)})
                 continue
-            if open_one(sym, item, ctx, ans, eq):
-                out["opened"].append(("long", sym))
+            # v13 fail-soft: an entry error (e.g. Alpaca 40310000 insufficient
+            # buying power) must not kill the cycle before status() — log it,
+            # mark the headline seen, keep managing the book.
+            try:
+                if open_one(sym, item, ctx, ans, eq, budget):
+                    out["opened"].append(("long", sym))
+            except Exception as e:
+                logrec({"event": "perp_entry_err", "inst": sym, "err": str(e)[:200],
+                        "headline": item["headline"]})
         save_json(NEWS_STATE, st)
     # persist market-state transition flag + seen/acted ids every cycle
     st["last_open_state"] = is_open

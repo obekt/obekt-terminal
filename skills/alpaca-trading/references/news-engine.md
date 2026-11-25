@@ -1,6 +1,24 @@
 # News-driven stock engine: design, LLM contract, validation, telemetry
 
-Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
+Reference implementation: `engine/alpaca_stocks.py` in this repo.
+CURRENT: v13.0-volbrackets (2026-11-25, kill-gate replacement of v12.0-intraday:
+34 closes, realized net −$0.09 ≤ 0 at the 30-close gate). v13 keeps the v12
+intraday frame — medium-quality substantive catalysts admitted, 1–6h holds,
+45m per-symbol re-entry cooldown, MAX_OPEN 3, MAX_LLM_CALLS 8, CONF_FLOOR
+0.55, no entries after 15:30 ET, FLAT ALL 15:50 ET — and changes what the v12
+book proved broken:
+  - brackets are CODE-computed from the symbol's 14-session daily ATR (IEX):
+    SL = clamp(0.35×ATR%, 0.6, 2.0), TP = clamp(1.5×SL, 1.0, 3.0). The LLM is
+    no longer asked for target/stop — v12's model templated 1.2/0.8 on 32/39
+    trades and the fixed 0.8% stop sat inside the noise band (53% stop-outs);
+  - prompt asks for calibrated confidence across the full range (v12 anchored
+    at 0.62 on 30/39 calls);
+  - deep-dip rule: day_chg ≤ −4% requires impact=high AND conf ≥ 0.70;
+  - no pyramiding (a held symbol is never re-entered — symbol-keyed meta was
+    being overwritten), cash-clamped leg budget, fail-soft entry errors.
+Kill-gate v13 (pre-registered 11-25): 30 closes OR 7 days, net ≤ 0 → replace.
+The v11 catalyst-only design below is the original baseline (48h holds, one
+entry/symbol/day, TP 1–5 / SL 0.8–3, conf 0.60) — kept for reference.
 
 ## Pipeline + deterministic gates (code owns risk; LLM never overrides)
 
@@ -9,8 +27,10 @@ Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
 2. News scan: fresh headlines (90-min window) on a ~60-name liquid universe
    (30 mega-caps + 30 news-heavy mid/high-beta), TWO sources: Alpaca wire +
    Yahoo per-ticker RSS (15-min cache, >=0.7 token-overlap cross-source dedupe,
-   stable md5 ids so the seen-ledger works across cycles),
-   dedupe by id, one evaluation per headline, one entry per symbol per day.
+   stable md5 ids — builtin hash() is salted per process, so hash()-based ids
+   change every restart and the seen-ledger re-evaluates the same headlines),
+   dedupe by id, one evaluation per headline, 45m post-exit re-entry cooldown
+   per symbol, never re-enter a symbol already held (no pyramiding).
    On the closed→open transition widen the window to ~18h so overnight and
    pre-market catalysts are visible at the open.
 3. Pre-gates BEFORE spending an LLM call: ask-vs-last deviation ≤ 2.5%
@@ -19,19 +39,27 @@ Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
    spread is not the NBBO (routinely 2–4% on liquid names) and Alpaca routes
    to the inside market; tight IEX spread/ask gates (1%/0.35%) rejected most
    legitimate candidates (TSLA, COIN) while measuring nothing about real
-   execution cost. News fetch: the API `start` param is unreliable (returned
-   0 rows for valid windows while fresh items existed) — fetch newest pages
-   WITHOUT start, filter created_at client-side, stop when items predate the
-   cutoff (12-page cap).
-4. LLM decision (≤4 calls/cycle): halogen via chat.obekt.com/v1, temp ~0.2,
+   execution cost. News fetch: use the server-side `start` param (RFC3339)
+   PLUS a client-side created_at re-filter, and paginate to the token end
+   (20-page cap) — NEVER early-stop on the first item older than the cutoff:
+   the wire sorts by updated_at, not created_at, so old-but-recently-updated
+   items interleave with fresh ones and early-stop silently truncates the
+   window. A transient `start`-returns-0-rows failure is possible; the client
+   re-filter + a no-start probe distinguish API outage from a genuinely quiet
+   tape before touching the fetch logic.
+4. LLM decision (≤8 calls/cycle): halogen via chat.obekt.com/v1, temp ~0.2,
    strict-JSON system prompt. Schema: action buy|no_trade, confidence 0–1,
-   impact high|medium|low, target_pct, stop_pct, horizon_hours, rationale.
-5. Post-gates: confidence ≥ 0.60 (burn-in bar; recalibrate after ~30 calls),
-   impact ≠ low, slots free (MAX_OPEN 2).
-6. Sizing: equity × 0.98 / MAX_OPEN per leg, fractional qty = budget/ask,
-   min $1 notional; hard notional bug-guard far above equity.
-7. Brackets: TP clamp [1, 5]%, SL clamp [0.8, 3]%, enforce TP ≥ 1.5×SL;
-   engine-managed (no server brackets on fractional). Time exit 48h.
+   impact high|medium|low, horizon_hours, rationale. NO target/stop — exit
+   geometry is code-computed from measured volatility (see step 7).
+5. Post-gates: confidence ≥ 0.55, impact ≠ low, slots free (MAX_OPEN 3),
+   deep-dip rule (day_chg ≤ −4% needs impact=high AND conf ≥ 0.70).
+6. Sizing: min(equity × 0.98 / MAX_OPEN, cash × 0.98) per leg, fractional
+   qty = budget/ask, min $1 notional; hard notional bug-guard far above equity.
+7. Brackets (v13, code-computed): SL = clamp(0.35 × ATR14%, 0.6, 2.0),
+   TP = clamp(1.5 × SL, 1.0, 3.0), enforce TP ≥ 1.5×SL; ATR from 14-session
+   daily IEX bars, cached per symbol per day, wider fallback if the fetch
+   fails; engine-managed (no server brackets on fractional). Time exit 6h,
+   flat everything 15:50 ET.
 8. Daily breaker: equity ≤ day-start × 0.92 → STOP file marked
    `breaker <date>`, auto-clears on UTC rollover; manual STOP/STOP_PERP
    persists. Orphan reconciliation every cycle (adopt exchange positions
@@ -40,11 +68,9 @@ Reference implementation: `engine/alpaca_stocks.py` (v11.0-news) in this repo.
 ## LLM decision contract robustness
 
 - Parse ladder: direct json.loads → outermost balanced-brace block →
-  field-level regex for action/confidence/impact/target/stop (rationale
-  optional). Only truly unparseable output fails closed.
-- Require valid brackets ONLY for action=buy; no_trade legitimately carries
-  0/missing targets — asserting brackets on every answer mislabels valid
-  no_trades as errors and can starve the book.
+  field-level regex for action/confidence/impact (rationale optional). Only
+  truly unparseable output fails closed. v13 does not request brackets at
+  all; legacy outputs that still carry them parse fine and are ignored.
 - Prompt: "no prose outside JSON; never use double-quote characters inside
   rationale" — the rationale string is where models break JSON.
 - Fail-closed events: log the error WITH a snippet of the raw answer (debug
