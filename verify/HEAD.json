@@ -1,7 +1,7 @@
 {
- "head_sha256": "1436fd2782e3f8c4f188648e9f3edc77e01d0d46af378c0c003657930d275ad6",
+ "head_sha256": "d34346a740cbb2a43c9730570faad53392955024d81310c3ab1e470004eefb0c",
  "note": "anchor of https://trader.obekt.com/chain.jsonl \u2014 verify.py checks the whole chain",
- "seq": 16,
- "sig": "1qP+zZSfa2t2FcNntBhApH/Q3AVjgaR3539HcrHhB0vO4xqt6m2XeqksVFp4YwL3+CUwm5BHsJz2+6c9mRwuDw==",
- "ts": "2026-11-24T00:04:10.200432+00:00"
+ "seq": 17,
+ "sig": "9E7paTgHRRll/iaYiwQ+iRRVVUSX0d+xqElqy3r25Vh28Znm4FpmHLC/5jOvguvoXA8yH6XE46ikNqSI1S1fBQ==",
+ "ts": "2026-11-25T00:04:15.635091+00:00"
 }
