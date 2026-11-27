@@ -109,10 +109,13 @@ def _live_params():
     defaults = {"CONF_FLOOR": 0.55, "MAX_OPEN": 3, "MAX_NOTIONAL_FRAC": 0.98,
                 "MAX_NOTIONAL_USD": 500.0, "MAX_SPREAD_PCT": 10.0,
                 "ASK_VS_LAST_PCT": 2.5, "QUOTE_STALE_S": 90,
-                "CHASE_CAP_PCT": 7.0, "KNIFE_FLOOR_PCT": -9.0,
-                "TP_MIN": 0.8, "TP_MAX": 2.5, "SL_MIN": 0.5, "SL_MAX": 1.5,
+                "CHASE_CAP_PCT": 3.5, "KNIFE_FLOOR_PCT": -9.0,
+                "DEEP_DIP_PCT": -4.0, "DEEP_DIP_CONF": 0.70,
+                "ATR_SESSIONS": 14, "ATR_SL_FRAC": 0.35, "ATR_FALLBACK_SL": 1.2,
+                "TP_MIN": 1.0, "TP_MAX": 3.0, "SL_MIN": 0.6, "SL_MAX": 2.0,
                 "TP_SL_RATIO": 1.5, "MAX_HOLD_H": 6.0, "DAILY_LOSS_PCT": 8.0,
-                "NEWS_WINDOW_MIN": 90, "MAX_LLM_CALLS": 8, "COOLDOWN_MIN": 45,
+                "NEWS_WINDOW_MIN": 90, "MAX_LLM_CALLS": 8, "COOLDOWN_MIN": 60,
+                "SL_COOLDOWN_MIN": 240, "OPEN_SETTLE_MIN": 15,
                 "SELL_REG_FEE_RATE": 0.00003, "HEARTBEAT_S": 1800}
     try:
         src = open(os.path.join(BASE, fname)).read(65536)
@@ -884,7 +887,10 @@ def build_stats(trips, events, ccy="EUR", capital_base=None, capital_base_fn=Non
     # exit-reason breakdown
     def exit_cat(t):
         r = (t.get("reason") or "").lower()
-        # stocks engine (v11.0-news): engine-managed TP/SL + 48h time exit
+        # stocks engine (v13.0-volbrackets): code-computed ATR TP/SL + 6h time
+        # exit + deterministic flat-by-close 15:50 ET
+        if "flat-by-close" in r:
+            return "FLAT BY CLOSE"
         if r.startswith("tp "):
             return "TP EXIT"
         if r.startswith("sl "):
@@ -1871,24 +1877,36 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         + str(len(_stocks_universe()) or 30) + "-name US-stock universe; "
         "fresh headlines become candidates. The self-hosted halogen-qwen3.8-flash-next LLM reads ONE "
         "headline + summary + price context per candidate and returns TYPED JSON "
-        "{action: buy|no_trade, confidence, impact, target_pct, stop_pct, horizon_hours, rationale}. "
+        "{action: buy|no_trade, confidence, impact, horizon_hours, rationale} — catalyst "
+        "classification ONLY; exit levels are NOT model outputs. "
         "Any transport/parse/schema failure FAILS CLOSED to no_trade. The LLM never sizes positions "
         "and never overrides a gate — CODE owns risk: regular-market-hours clock (09:30-16:00 ET), "
         "spread/staleness/ask-vs-last gates, chase guard (no buying a name already +"
         + fmt_pct(_p.get("CHASE_CAP_PCT"), 7) + "% on the day) "
         "and knife floor (no catching " + fmt_pct(_p.get("KNIFE_FLOOR_PCT"), -9) + "% days), "
-        "confidence >= " + fmt_pct(_p.get("CONF_FLOOR"), 0.60) + " and impact not low, "
-        "one entry per symbol per day, MAX_OPEN=" + str(int(_p.get("MAX_OPEN") or 2)) + " slots, all-in fractional sizing "
-        "(~equity*" + fmt_pct(_p.get("MAX_NOTIONAL_FRAC"), 0.98) + "/" + str(int(_p.get("MAX_OPEN") or 2)) + " per leg), engine-managed TP/SL brackets (fractional orders cannot carry "
-        "server-side brackets, so the engine polls and exits), " + str(int(_p.get("MAX_HOLD_H") or 48)) + "h time exit, -"
+        "confidence >= " + fmt_pct(_p.get("CONF_FLOOR"), 0.55) + " and impact not low, "
+        "deep-dip rule (day change <= " + fmt_pct(_p.get("DEEP_DIP_PCT"), -4) + "% needs impact=high and conf >= "
+        + fmt_pct(_p.get("DEEP_DIP_CONF"), 0.70) + "), "
+        "60m post-TP / 240m post-SL re-entry cooldown and no pyramiding (a held symbol is never re-entered), "
+        "MAX_OPEN=" + str(int(_p.get("MAX_OPEN") or 3)) + " slots, cash-clamped fractional sizing "
+        "(min(equity*" + fmt_pct(_p.get("MAX_NOTIONAL_FRAC"), 0.96) + "/" + str(int(_p.get("MAX_OPEN") or 3)) + ", cash*" + fmt_pct(_p.get("MAX_NOTIONAL_FRAC"), 0.96) + ") per leg, decremented per fill), "
+        "TP/SL brackets COMPUTED BY CODE from the symbol's measured " + str(int(_p.get("ATR_SESSIONS") or 14)) + "-session completed daily ATR (sort=desc, split-adjusted) "
+        "(SL = " + fmt_pct(_p.get("ATR_SL_FRAC"), 0.35) + " x ATR%, clamped " + fmt_pct(_p.get("SL_MIN"), 0.6) + "-"
+        + fmt_pct(_p.get("SL_MAX"), 2.0) + "%; TP = " + fmt_pct(_p.get("TP_SL_RATIO"), 1.5) + " x SL, clamped "
+        + fmt_pct(_p.get("TP_MIN"), 1.0) + "-" + fmt_pct(_p.get("TP_MAX"), 3.0) + "%) plus trailing protection at 65% of TP — fractional orders cannot carry "
+        "server-side brackets, so the engine polls using broker NBBO current_price; " + str(int(_p.get("MAX_HOLD_H") or 6)) + "h time exit, "
+        "15m opening settle (no entries or time-exits before 09:45 ET), dynamic close cutoffs from /v2/clock next_close "
+        "(no entries <=30m to close, FLAT EVERYTHING <=10m to close — handles half-days automatically), -"
         + fmt_pct(_p.get("DAILY_LOSS_PCT"), 8) + "% daily equity "
         "breaker with UTC-rollover auto-clear, STOP/STOP_PERP kill files, orphan reconciliation. "
         "LONG-ONLY, commission-free stocks (tiny sell-side SEC/TAF regulatory fee on closes), "
         "fractional shares, small experimental capital (live_equity.capital_put_in is authoritative). "
         "Honest EV: no demonstrated edge yet — the "
         "OKX fade edge was venue-specific and does NOT transfer; this is a fresh hypothesis with a "
-        "pre-registered kill-gate (30 closed trades OR 14 days, whichever first; live realized net "
-        "<= 0 -> replace the algorithm, per the operator's standing rule).\n\n"
+        "pre-registered kill-gate (30 closed trades OR 7 days, whichever first; live realized net "
+        "<= 0 -> replace the algorithm, per the operator's standing rule). The previous version "
+        "v12.0-intraday hit that gate on 2026-11-25 (34 closes, net -$0.09) and was replaced by "
+        "this " + _ver + " engine.\n\n"
     )
     perp_open = [{
         "book": "STOCKS", "inst": p.get("inst"), "side": p.get("side"),
@@ -2030,11 +2048,13 @@ def build_commentary(jev_latest, stats, equity, news, sentiment, trips, position
         "Entries happen ONLY in regular market hours (09:30-16:00 ET); outside them the engine "
         "accumulates news and manages exits at the next open — a closed market is a NORMAL state, "
         "not a malfunction. "
-        "The strategy is NEWS-DRIVEN: fresh stock-news headlines (Alpaca News API) are the signal; "
-        "the self-hosted halogen LLM returns typed JSON buy/no_trade decisions with confidence, "
-        "impact and target/stop expectations; deterministic CODE gates own all risk (spread, "
-        "staleness, chase/knife guards, confidence floor, impact, slot limits, one entry per symbol "
-        "per day) and the engine manages TP/SL brackets itself, plus a 48h time exit and a -8% "
+        "The strategy is NEWS-DRIVEN: fresh stock-news headlines (Alpaca News API + Yahoo RSS) are the signal; "
+        "the self-hosted halogen LLM returns typed JSON buy/no_trade decisions with confidence and "
+        "impact (catalyst classification only — it does NOT set exit levels); deterministic CODE gates own all risk (spread, "
+        "staleness, chase<=3.5%/knife guards, deep-dip rule, confidence floor, impact, slot limits, 60m post-TP / 240m "
+        "post-SL cooldown, no pyramiding) and the engine manages TP/SL brackets COMPUTED FROM THE "
+        "SYMBOL'S MEASURED VOLATILITY (14-session ATR) plus trailing protection at 65% TP, a 6h time exit, 15m opening settle "
+        "(09:45 ET), dynamic close cutoffs from /v2/clock next_close (no entries <=30m, FLAT <=10m — half-day safe), and a -8% "
         "daily equity breaker. The LLM never sizes or overrides a gate. "
         "TWO retired books are FROZEN HISTORY on this dashboard: (1) the OKX X-PERP book "
         "(2026-10-15 → 2026-11-19, two-way crypto perps, final engine v10.0-fade) and (2) the OKX "

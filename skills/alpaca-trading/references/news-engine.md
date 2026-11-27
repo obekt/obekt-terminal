@@ -1,21 +1,27 @@
 # News-driven stock engine: design, LLM contract, validation, telemetry
 
 Reference implementation: `engine/alpaca_stocks.py` in this repo.
-CURRENT: v13.0-volbrackets (2026-11-25, kill-gate replacement of v12.0-intraday:
-34 closes, realized net −$0.09 ≤ 0 at the 30-close gate). v13 keeps the v12
-intraday frame — medium-quality substantive catalysts admitted, 1–6h holds,
-45m per-symbol re-entry cooldown, MAX_OPEN 3, MAX_LLM_CALLS 8, CONF_FLOOR
-0.55, no entries after 15:30 ET, FLAT ALL 15:50 ET — and changes what the v12
-book proved broken:
-  - brackets are CODE-computed from the symbol's 14-session daily ATR (IEX):
-    SL = clamp(0.35×ATR%, 0.6, 2.0), TP = clamp(1.5×SL, 1.0, 3.0). The LLM is
-    no longer asked for target/stop — v12's model templated 1.2/0.8 on 32/39
-    trades and the fixed 0.8% stop sat inside the noise band (53% stop-outs);
-  - prompt asks for calibrated confidence across the full range (v12 anchored
-    at 0.62 on 30/39 calls);
-  - deep-dip rule: day_chg ≤ −4% requires impact=high AND conf ≥ 0.70;
-  - no pyramiding (a held symbol is never re-entered — symbol-keyed meta was
-    being overwritten), cash-clamped leg budget, fail-soft entry errors.
+CURRENT: **v13.1-volbrackets** (2026-11-27 audit fixes on v13.0-volbrackets,
+which replaced v12.0-intraday at the 30-close gate: 34 closes, −$0.09). v13.1
+keeps code-computed ATR brackets (`SL = clamp(0.35×ATR%, 0.6, 2.0)`,
+`TP = clamp(1.5×SL, 1.0, 3.0)`) and fixes verified production bugs:
+  - dynamic intraday close from `/v2/clock` `next_close` (`<=10m` flat, `<=30m`
+    entry cutoff — handles half-days like Black Friday 13:00 ET);
+  - `OPEN_SETTLE_MIN = 15` (blocks entries and time-exits before 09:45 ET while
+    keeping TP/SL live at 09:30 ET);
+  - `atr_pct()` uses `sort=desc`, `adjustment=split`, `end=yesterday 23:59Z`,
+    sorted ascending before TRs (default `sort=asc` dropped the latest ~9d);
+  - `halogen_decide()` receives target `sym` (not `item["symbols"][0]`);
+    `scan()` dedupes on `c["sym"]`, drops `>3`-sym roundups pre-LLM, sorts
+    single-stock/wire/freshest first, skips off-hours Yahoo RSS, and invalidates
+    `rss_cache.json` on window widening (90m → 1080m at 09:45 ET);
+  - `SL_COOLDOWN_MIN = 240` (4h post-SL lockout; `COOLDOWN_MIN = 60` post-TP),
+    `CHASE_CAP_PCT = 3.5`, prompt consistency rule banning self-contradictory buys;
+  - `close_one()` preserves `meta[sym]` on failed sells; `manage()` uses broker
+    `/v2/positions` `current_price`, persists `hwm_pct`, and arms trailing
+    protection at 65% TP (50% SL giveback, +0.15% floor); `cycle()` decrements
+    live `cash` across fills; `status()` tails `perp_log.jsonl` (O(1)) and writes
+    `market_open`.
 Kill-gate v13 (pre-registered 11-25): 30 closes OR 7 days, net ≤ 0 → replace.
 The v11 catalyst-only design below is the original baseline (48h holds, one
 entry/symbol/day, TP 1–5 / SL 0.8–3, conf 0.60) — kept for reference.

@@ -14,7 +14,7 @@ metadata:
 Venue of the ObekT live trading platform after the OKX→Alpaca migration
 (operator directive: real stocks, decisions from stock news, crypto value
 moved over as buying power — NO crypto trading). Live engine:
-`engine/alpaca_stocks.py` (v13.0-volbrackets) in this repo, run on the VPS by a
+`engine/alpaca_stocks.py` (v13.1-volbrackets) in this repo, run on the VPS by a
 systemd timer (`obekt-stocks.timer`) every 5m. Public deck trader.obekt.com reads its
 telemetry; signed transparency chain continues across the venue change.
 The OKX era is archived in `*_okx_retired` files — the okx-trading skill covers
@@ -23,7 +23,10 @@ the retired venue.
 Algorithm history: v11.0-news (11-19, catalyst-only, 48h holds) → v12.0-intraday
 (11-20, operator directive "multiple trades a day, flat by the close") →
 v13.0-volbrackets (11-25, kill-gate replacement: v12 closed 34 trades at net
-−$0.09; fixed LLM-set 0.8% stops sat inside the noise band, 53% stop-outs).
+−$0.09; fixed LLM-set 0.8% stops sat inside the noise band, 53% stop-outs) →
+v13.1-volbrackets (11-27, audit fix release: dynamic `next_close` flat for
+half-days, 15m open settle, `sort=desc` split-adjusted ATR, multi-symbol target
+fix, 4h post-SL lockout, +3.5% chase cap, broker NBBO exits + trailing stop).
 
 ## When to Use
 
@@ -114,6 +117,20 @@ procedure: `references/api-and-data.md`.
 - Unit-test the decision contract with a synthetic strong catalyst AND a
   noise item before trusting live cycles — live news may all gate-reject,
   masking a broken LLM path.
+- Never hardcode `15:50` / `15:30 ET` close cutoffs (fixed v13.1): US markets
+  have 13:00 ET half-days (Black Friday, Christmas Eve, July 3). Always compute
+  flat/entry cutoffs dynamically from `/v2/clock` `next_close`.
+- `/v2/stocks/bars` defaults to `sort=asc` (fixed v13.1): pass `sort=desc` +
+  `adjustment=split` + `end=yesterday 23:59Z`, then sort chronologically before
+  True Range calculation so the latest sessions are never dropped.
+- Avoid 09:30–09:45 ET entries & time-exits (`OPEN_SETTLE_MIN=15`, fixed v13.1)
+  so opening-minute imbalances don't trigger immediate stop-outs or auction-spread
+  dumps; keep TP/SL active at 09:30 ET and fire the 18h overnight sweep at 09:45 ET.
+- Multi-symbol headlines & failed sells (fixed v13.1): pass the candidate's
+  actual `sym` (not `item["symbols"][0]`), drop `>3`-sym roundups pre-LLM, lock
+  out stopped-out symbols for 4h (`SL_COOLDOWN_MIN=240`), use broker `/v2/positions`
+  `current_price` for exits + trailing stop at 65% TP, and never delete
+  `meta[sym]` when a sell order fails (`od is None`).
 
 ## Ops anchors
 

@@ -40,6 +40,7 @@ try:
     out["n_pos"] = s.get("n_positions")
     out["halted"] = s.get("halted")
     out["engine"] = s.get("engine")
+    out["market_open"] = s.get("market_open")
     ts = s.get("ts")
     if ts:
         out["status_age_min"] = round((now - datetime.fromisoformat(ts).timestamp()) / 60, 1)

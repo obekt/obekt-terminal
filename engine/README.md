@@ -2,12 +2,12 @@
 
 **One live book, several engine files.** As of the 2026-11-19 venue change the
 live book is `alpaca_stocks.py` — a **news-driven, long-only US-equity engine on
-Alpaca** (v13.0-volbrackets). Fresh Alpaca News API + Yahoo RSS headlines on a 60-name liquid
-universe become candidates; a **self-hosted halogen** model returns a typed JSON
+Alpaca** (v13.1-volbrackets). Fresh Alpaca News API + Yahoo RSS headlines on a 60-name liquid
+universe (`>3`-symbol roundups dropped pre-LLM) become candidates; a **self-hosted halogen** model returns a typed JSON
 verdict (catalyst classification only); deterministic code gates own all risk
-**including the exit geometry** (TP/SL computed from the symbol's 14-session
-ATR); fractional market orders enter long-only and the engine manages its own
-exits — 6h time exit, flat everything 15:50 ET. The OKX era is
+**including the exit geometry** (TP/SL computed from the symbol's latest 14-session
+completed ATR with `sort=desc` and split adjustment, plus trailing protection at 65% TP); fractional market orders enter long-only after a 15m opening settle (`09:45 ET`) and the engine manages its own
+exits — broker `current_price`, 6h time exit, dynamic flat-everything ≤10m before `/v2/clock` `next_close`. The OKX era is
 **retired history**: the X-Perp book (`okx_perp.py` + `okx_mom.py`, final engine
 v10.0-fade) retired 2026-11-19 with **426 closes, 40.8% WR, −$26.68 net of all
 fees on $134.19 capital**; the spot EUR book (`okx_jev.py`) retired 2026-10-15
@@ -26,8 +26,8 @@ scheduler (cron/systemd timer) every 5 minutes — no daemon needed.
 
 | file | what it is |
 |---|---|
-| `alpaca_stocks.py` | **LIVE book — US STOCKS, news-driven (v13.0-volbrackets, long-only, intraday).** Alpaca News API headlines (≤90m, widened to 18h on the closed→open transition) on a 60-name universe (Alpaca wire + Yahoo per-ticker RSS, 15-min cache, cross-source dedupe) → deterministic pre-gates (ask-vs-last ≤2.5%, quote ≤90s, spread disaster-guard, chase ≤+7%, knife ≥−9%) → self-hosted halogen typed JSON (`action buy\|no_trade`, confidence, impact, horizon, rationale — catalyst classification only; fails closed) → post-gates (conf ≥0.55, impact ≠ low, MAX_OPEN 3, deep dip ≤−4% needs high impact + conf ≥0.70, 45m post-exit cooldown, no pyramiding) → fractional market order, all-in sizing (equity×0.98/3 per leg, clamped to cash) → **code-computed ATR-scaled TP/SL** (SL = 0.35×ATR14 clamped 0.6–2.0%, TP = 1.5×SL clamped 1.0–3.0%) + 6h time exit + no entries after 15:30 ET + FLAT 15:50 ET + −8% daily breaker (UTC auto-clear) + STOP/STOP_PERP kill files + orphan reconciliation. Stdlib only. |
-| `stocks_health.py` | Compact JSON health snapshot of the live engine (timer active, log/status freshness, STOP files, equity sanity, 60m error/warn/call rates). Read-only; printed fields feed a watchdog. |
+| `alpaca_stocks.py` | **LIVE book — US STOCKS, news-driven (v13.1-volbrackets, long-only, intraday).** Alpaca News API + Yahoo RSS headlines (≤90m, 18h sweep at 09:45 ET, `>3`-sym roundups dropped, sorted company-specific/wire/freshest first) on a 60-name universe → deterministic pre-gates (ask-vs-last ≤2.5%, quote ≤90s, spread disaster-guard, chase ≤+3.5%, knife ≥−9%) → self-hosted halogen typed JSON (`action buy\|no_trade`, confidence, impact, horizon, rationale — catalyst classification only; consistency-checked; fails closed) → post-gates (conf ≥0.55, impact ≠ low, MAX_OPEN 3, deep dip ≤−4% needs high impact + conf ≥0.70, 60m post-TP / 240m post-SL cooldown, no pyramiding) → fractional market order, cash-clamped sizing (`min(equity×0.96/3, cash×0.96)`, decremented per fill) → **code-computed ATR-scaled TP/SL** (`sort=desc`, `adjustment=split`, SL = 0.35×ATR14 clamped 0.6–2.0%, TP = 1.5×SL clamped 1.0–3.0%) + trailing protection at 65% TP + broker `current_price` exits + 6h time exit (after 09:45 ET settle) + dynamic close cutoffs (`next_close` −30m entries / −10m flat, half-day safe) + −8% daily breaker + STOP/STOP_PERP + orphan reconciliation. Stdlib only. |
+| `stocks_health.py` | Compact JSON health snapshot of the live engine (timer active, log/status freshness, `market_open`, `n_pos`, STOP files, equity sanity, 60m error/warn/call rates). Read-only; printed fields feed a watchdog (including stranded-position alerts). |
 | `verify_snapshot.py` | Daily signed equity snapshot (GET-only, isolated; never imported by the trader). Reads Alpaca account/positions + log counts, appends to the ed25519 hash chain, anchors the head to GitHub. See [`../verify/README.md`](../verify/README.md). |
 | `okx_perp.py` | **RETIRED X-Perp execution host + Jev-signal book (two-way).** Kept as history and as a library: its execution machinery and `--dry-run` paper bookkeeping are reused by the retired fade engine. |
 | `okx_mom.py` | **RETIRED deterministic cross-sectional fade engine (v10.0-fade).** Ranks liquid XPERPs by 48h return and fades the extremes. Final live book of the OKX era; retired at the venue change. |
@@ -118,18 +118,18 @@ the UI can never drift from what the engine actually enforces.
 | `ASK_VS_LAST_PCT` | 2.5 | ghost-quote guard: IEX ask >2.5% off the last trade = broken/stale quote |
 | `QUOTE_STALE_S` | 90 | max quote age |
 | `MAX_SPREAD_PCT` | 10.0 | disaster guard ONLY — IEX BBO is not the NBBO; Alpaca routes to the inside market |
-| `CHASE_CAP_PCT` / `KNIFE_FLOOR_PCT` | +7.0 / −9.0 | don't chase a name already up big; don't catch a collapsing one |
+| `CHASE_CAP_PCT` / `KNIFE_FLOOR_PCT` | +3.5 / −9.0 | don't chase already-extended moves (`>+3.5%` bled in live replay); don't catch a collapsing one |
 | `DEEP_DIP_PCT` / `DEEP_DIP_CONF` | −4.0 / 0.70 | day-change ≤−4% additionally requires impact=high AND conf ≥0.70 |
-| `CONF_FLOOR` | 0.55 | medium-quality catalysts admitted; confidence is calibrated by the prompt |
+| `CONF_FLOOR` | 0.55 | medium-quality catalysts admitted; prompt bans buying when rationale argues against setup |
 | impact gate | ≠ low | low-impact news never trades |
-| `MAX_OPEN` | 3 | open-position slots (no pyramiding: a held symbol is never re-entered) |
-| `COOLDOWN_MIN` | 45 | per-symbol re-entry lockout after an exit |
-| `MAX_NOTIONAL_FRAC` / `MAX_NOTIONAL_USD` | 0.98 / 500 | all-in sizing fraction (equity×0.98/3 per leg, clamped to cash); the USD term is a bug guard |
-| `ATR_SESSIONS` / `ATR_SL_FRAC` | 14 / 0.35 | volatility measurement: SL = 0.35 × 14-session daily ATR% (IEX), cached per day |
+| `MAX_OPEN` / `MAX_HEADLINE_SYMS` | 3 / 3 | open-position slots (no pyramiding) + drop `>3`-ticker roundups pre-LLM |
+| `COOLDOWN_MIN` / `SL_COOLDOWN_MIN` | 60 / 240 | 60m post-TP lockout; 4h post-SL lockout (prevents same-story reprint chases) |
+| `MAX_NOTIONAL_FRAC` / `MAX_NOTIONAL_USD` | 0.96 / 500 | cash-clamped leg sizing (`min(eq×0.96/3, cash×0.96)`, decremented per fill); USD term is a bug guard |
+| `ATR_SESSIONS` / `ATR_SL_FRAC` | 14 / 0.35 | volatility measurement: SL = 0.35 × latest 14 completed daily ATR% (`sort=desc`, `adjustment=split`) |
 | `TP_MIN`/`TP_MAX` · `SL_MIN`/`SL_MAX` | 1.0–3.0% · 0.6–2.0% | clamps on the volatility-derived brackets, enforced in code |
-| `TP_SL_RATIO` | 1.5 | enforce TP ≥ 1.5×SL |
-| `MAX_HOLD_H` | 6 | intraday hold; time exit |
-| `ENTRY_CUTOFF_ET` / `FLAT_TIME_ET` | 15:30 / 15:50 | no late entries; flat everything before the close (gap risk designed out) |
+| `TP_SL_RATIO` / `TRAIL_ARM_FRAC` | 1.5 / 0.65 | TP ≥ 1.5×SL; trailing stop arms at 65% of TP (50% SL giveback, +0.15% floor) |
+| `MAX_HOLD_H` / `OPEN_SETTLE_MIN` | 6 / 15 | intraday hold time-exit; 15m opening settle (`09:30–09:45 ET` blocks entries & time-exits) |
+| `ENTRY_CUTOFF_BEFORE_CLOSE_MIN` / `FLAT_BEFORE_CLOSE_MIN` | 30 / 10 | dynamic cutoffs off `/v2/clock` `next_close` (handles 13:00 ET half-days; falls back to `15:30`/`15:50 ET`) |
 | `DAILY_LOSS_PCT` | 8.0 | software backstop breaker; auto-clears at UTC roll |
 | `SELL_REG_FEE_RATE` | 0.00003 | SEC+TAF estimate on sells (commission-free venue) |
 

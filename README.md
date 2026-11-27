@@ -35,7 +35,7 @@ Two pieces, both in this repo:
 
 | | What it does |
 |---|---|
-| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v13.0-volbrackets) polls the **Alpaca News API + Yahoo per-ticker RSS** for fresh headlines on a 60-name liquid US-stock universe (30 mega-caps + 30 news-heavy mid/high-beta names), asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, horizon, rationale — catalyst classification only), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (**TP/SL computed by code from the symbol's measured 14-session ATR**, + 6h time exit + flat-everything 15:50 ET). **Risk lives in code, never in the model:** the LLM never sizes a position, never sets a bracket, and never overrides a gate; any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
+| **`engine/`** — the trader | **One live book.** `alpaca_stocks.py` (**LIVE**, v13.1-volbrackets) polls the **Alpaca News API + Yahoo per-ticker RSS** for fresh headlines on a 60-name liquid US-stock universe (30 mega-caps + 30 news-heavy mid/high-beta names; `>3`-symbol roundups filtered pre-LLM), asks a **self-hosted halogen** model for a *typed* JSON verdict (`action buy\|no_trade`, confidence, impact, horizon, rationale — catalyst classification only), and — only if deterministic code gates clear — buys **fractional shares long-only** and manages the exit itself (**TP/SL computed by code from the symbol's measured 14-session ATR** + trailing protection at 65% of TP + 6h time exit + dynamic flat-everything ≤10m before `clock.next_close`). **Risk lives in code, never in the model:** the LLM never sizes a position, never sets a bracket, and never overrides a gate; any model error fails closed to `no_trade`. The retired OKX engines (`okx_perp.py` X-Perps, `okx_jev.py` spot EUR, `okx_mom.py` fade) stay in the tree as honest history and as a library the deck still reads. |
 | **`terminal/`** — the observation deck | A **Bloomberg-style text UI** (pure HTML/CSS/JS, no framework) that reads the engine's raw logs and renders them: an always-visible open-position badge, the live stocks book, equity curve, selectivity funnel, decision scatter, the exact headline + price context the model saw, a candlestick replay of every trade, and a **local LLM** writing the desk commentary. Stocks-first; the retired crypto books live in one collapsed block at the bottom. **Nothing is clickable except the trade replay** — it is observation only, by design. |
 
 The thesis, in one line: **a self-hosted typed decision-model chooses, deterministic code enforces risk, a local LLM explains, and a human watches — none of them parse each other's prose.**
@@ -65,14 +65,14 @@ And the piece that makes people lean in — **click any closed trade in the ledg
 
 The system has **one live book** (Alpaca US stocks) and **two retired books** (OKX X-Perps and spot EUR) kept as frozen history.
 
-- **US STOCKS** (`engine/alpaca_stocks.py`, v13.0-volbrackets) — **LIVE**. News-driven,
+- **US STOCKS** (`engine/alpaca_stocks.py`, v13.1-volbrackets) — **LIVE**. News-driven,
   **LONG-ONLY**, fractional shares, USD cash, **no leverage** at this equity
   (leverage needs $2k under Alpaca's intraday framework; shorting needs margin
   approval). **Commission-free** stocks — the only trading costs are a tiny
   sell-side SEC/TAF regulatory fee (~0.003% on closes) and the spread.
-  **Intraday by design**: regular hours only (09:30–16:00 ET), no new entries
-  after 15:30 ET, **flat everything at 15:50 ET** — overnight/weekend gap risk
-  is designed out, the book is flat every night. Capital: **~$124**.
+  **Intraday by design**: regular hours only (15m opening settle until 09:45 ET),
+  dynamic close cutoffs from `/v2/clock` `next_close` (no entries ≤30m before
+  close, **flat everything ≤10m before close** — handles half-days automatically). Capital: **~$124**.
 - **OKX X-PERPS** (`engine/okx_perp.py` / `okx_mom.py`) — **RETIRED 2026-11-19**.
   Two-way USD-settled MiFID expiry-perps. Final record: **426 closes, 40.8% win
   rate, −$26.68 net of all fees on $134.19 capital** (2026-10-15→11-19, last
@@ -94,28 +94,29 @@ realized net ≤ 0 → replace the algorithm** (the operator's standing rule: fa
 algorithms get replaced, not silently stopped). **The gate is real, not
 decorative:** the first intraday version (v12.0) hit it on 2026-11-25 — 34
 closes, net −$0.09, a 53% stop-out rate from fixed 0.8% stops sitting inside
-the noise band — and was replaced by **v13.0-volbrackets**: code-computed
-ATR-scaled brackets (the LLM no longer sets exits), a deep-dip entry rule, and
-no same-symbol pyramiding.
+the noise band — and was replaced by **v13.0-volbrackets** (patched to
+**v13.1-volbrackets** on 2026-11-27 after a live audit fixed half-day early-close
+handling, ATR bar sort order, opening-bell settle, multi-symbol targeting,
+revenge re-entry lockouts, chase cap, and trailing protection).
 
 ```
    every 5 minutes, unattended (entries only in regular market hours):
    ┌─────────────────────────────────────────────────────────────┐
-   │ 1. SCAN      Alpaca News API · fresh headlines ≤90m         │
-   │              on a 60-name US-stock universe · wire + RSS    │
-   │ 2. FILTER    one candidate per symbol · dedupe seen ids     │  ← deterministic code
-   │              45m post-exit cooldown · no pyramiding         │
+   │ 1. SCAN      Alpaca News API + Yahoo RSS · fresh ≤90m       │
+   │              (18h sweep at 09:45 ET) · 60-name universe     │
+   │ 2. FILTER    drop >3-sym roundups · per-(id,sym) seen       │  ← deterministic code
+   │              60m TP / 240m SL cooldown · no pyramiding      │
    │ 3. PRE-GATE  ask-vs-last ≤2.5% · quote ≤90s · spread guard  │     before any LLM call
-   │              chase ≤+7% day · knife ≥−9% day                │
+   │              chase ≤+3.5% day · knife ≥−9% day              │
    │ 4. DECIDE    halogen → typed JSON: action buy|no_trade,     │  ← self-hosted, $0 marginal
    │              confidence, impact, horizon (catalyst only)    │     fails closed to no_trade
    │ 5. VETO      conf ≥0.55 · impact ≠ low · MAX_OPEN 3 slots   │  ← code owns risk
    │              deep dip ≤−4% needs high impact + conf ≥0.70   │
-   │ 6. SIZE      equity × 0.98 / 3 per leg · clamped to cash    │
-   │              TP/SL from 14-session ATR · TP ≥ 1.5× SL       │
-   │ 7. EXECUTE   market order · no entries after 15:30 ET       │
-   │ 8. MANAGE    engine TP/SL (5m poll) · 6h time exit · FLAT   │  ← fractional orders can't
-   │              15:50 ET · −8% breaker (UTC auto-clear)        │     carry server brackets
+   │ 6. SIZE      min(equity×0.96/3, cash×0.96) · decremented    │
+   │              TP/SL from 14-session ATR (sort=desc, split)   │
+   │ 7. EXECUTE   market order · 09:45 ET → next_close − 30m     │
+   │ 8. MANAGE    broker NBBO px · TP/SL + trail@65%TP · 6h exit │  ← dynamic next_close − 10m
+   │              FLAT ≤10m to close · −8% breaker (UTC clear)   │     handles half-days
    └─────────────────────────────────────────────────────────────┘
                           │
                           ▼  raw JSONL telemetry (every scan, gate, vote, fill)
